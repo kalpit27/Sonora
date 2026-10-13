@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="0"
+        android:translateY="0">
+        <!-- Outer acoustic ring accent -->
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#1E3E62"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M38,34 C42.5,30 48,28 54,28 C68.3,28 80,39.7 80,54 C80,68.3 68.3,80 54,80 C48,80 42.5,78 38,74" />
+        
+        <!-- Electric Orange Sonora 'S' Acoustic Wave Monogram -->
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FF6500"
+            android:strokeWidth="5.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M66,40 C66,40 60,34 52,34 C43.5,34 38,40 38,47 C38,55 50,56 56,58 C64,61 68,66 68,73 C68,81 60,86 50,86 C40,86 34,79 34,79" />
+
+        <!-- Pure tone central acoustic needle / pulse dots -->
+        <path
+            android:fillColor="#FF6500"
+            android:pathData="M72,36 A3,3 0 1,1 72,30 A3,3 0 1,1 72,36" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M32,78 A3,3 0 1,1 32,72 A3,3 0 1,1 32,78" />
+    </group>
+</vector>
