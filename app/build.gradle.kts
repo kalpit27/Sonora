@@ -83,6 +83,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
+    // Pure Java LAME MP3 Encoder
+    implementation("de.sciss:jump3r:1.0.5")
+
     // Unit Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

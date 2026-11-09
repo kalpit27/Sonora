@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Link
@@ -120,6 +121,7 @@ fun MainScreen(
     onOpenWebSearch: (title: String, artist: String) -> Unit = { _, _ -> },
     onOpenYouTubeMusic: (title: String, artist: String) -> Unit = { _, _ -> },
     onOpenExternalDownloader: (title: String, artist: String) -> Unit = { _, _ -> },
+    onNavigateYouTubeImport: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LocalSonoraColors.current
@@ -232,6 +234,15 @@ fun MainScreen(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search",
                             tint = colors.primaryText,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    IconButton(onClick = onNavigateYouTubeImport) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Import Audio",
+                            tint = colors.accent,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -463,6 +474,47 @@ fun MainScreen(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp
                                 )
+                            }
+
+                            // YouTube Audio Downloader Action Row
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(colors.elevatedBackground)
+                                    .clickable { onNavigateYouTubeImport() }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.accent.copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Download,
+                                        contentDescription = null,
+                                        tint = colors.accent,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Import Audio",
+                                        color = colors.primaryText,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Import audio from YouTube links and save as MP3 for offline listening",
+                                        color = colors.secondaryText,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
 
                             // Import Playlist Action Row

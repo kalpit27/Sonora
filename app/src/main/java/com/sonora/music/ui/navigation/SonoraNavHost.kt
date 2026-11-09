@@ -50,6 +50,15 @@ fun SonoraNavHost(
     val isHistoryEnabled by viewModel.isHistoryEnabled.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
+    val youTubeVideoInfo by viewModel.youTubeVideoInfo.collectAsState()
+    val youTubePlaylistInfo by viewModel.youTubePlaylistInfo.collectAsState()
+    val isFetchingYouTubeInfo by viewModel.isFetchingYouTubeInfo.collectAsState()
+    val youTubeUrlError by viewModel.youTubeUrlError.collectAsState()
+    val activeDownloadState by viewModel.activeDownloadState.collectAsState()
+    val downloadQueue by viewModel.downloadQueue.collectAsState()
+    val queueOverallProgress by viewModel.queueOverallProgress.collectAsState()
+    val downloadHistory by viewModel.downloadHistory.collectAsState()
+    val isResolvingStream by viewModel.isResolvingStream.collectAsState()
 
     val startDestination = if (hasStoragePermission) {
         SonoraDestination.Main.route
@@ -118,7 +127,8 @@ fun SonoraNavHost(
                 onStartDirectDownload = viewModel::startDirectDownload,
                 onOpenWebSearch = viewModel::openWebMusicSearch,
                 onOpenYouTubeMusic = viewModel::openYouTubeMusicSearch,
-                onOpenExternalDownloader = viewModel::openExternalDownloader
+                onOpenExternalDownloader = viewModel::openExternalDownloader,
+                onNavigateYouTubeImport = { navController.navigate(SonoraDestination.YouTubeImport.route) }
             )
         }
 
@@ -294,6 +304,77 @@ fun SonoraNavHost(
                 onAddSongToPlaylist = viewModel::addSongToPlaylist,
                 onCreatePlaylist = viewModel::createPlaylist
             )
+        }
+
+        val renderImportAudio: @Composable () -> Unit = {
+            com.sonora.music.ui.screens.youtube.YouTubeImportScreen(
+                videoInfo = youTubeVideoInfo,
+                playlistInfo = youTubePlaylistInfo,
+                isFetchingInfo = isFetchingYouTubeInfo,
+                urlError = youTubeUrlError,
+                activeDownload = activeDownloadState,
+                downloadQueue = downloadQueue,
+                queueOverallProgress = queueOverallProgress,
+                downloadHistory = downloadHistory,
+                isResolvingStream = isResolvingStream,
+                isExternalDownloaderAvailable = viewModel.isExternalDownloaderAvailable,
+                onBack = { navController.popBackStack() },
+                onFetchYouTubeUrl = viewModel::fetchYouTubeUrl,
+                onClearPreview = viewModel::clearYouTubePreview,
+                onTogglePlaylistItemSelection = viewModel::togglePlaylistItemSelection,
+                onSelectAllPlaylistItems = viewModel::selectAllPlaylistItems,
+                onStartDownload = viewModel::startYouTubeAudioDownload,
+                onStartPlaylistImport = { playlist, selectedTracks, quality, allowDupes ->
+                    viewModel.startPlaylistImport(playlist, selectedTracks, quality, allowDupes)
+                },
+                onCancelDownload = viewModel::cancelYouTubeAudioDownload,
+                onCancelQueue = viewModel::cancelQueue,
+                onCancelQueueItem = viewModel::cancelQueueItem,
+                onRetryQueueItem = viewModel::retryQueueItem,
+                onRetryFailedQueueItems = viewModel::retryFailedQueueItems,
+                onClearQueue = viewModel::clearDownloadQueue,
+                onResetActiveDownload = viewModel::resetActiveDownload,
+                onRetryDownload = viewModel::retryYouTubeDownload,
+                onDeleteHistoryItem = viewModel::deleteDownloadHistoryItem,
+                onClearHistory = viewModel::clearDownloadHistory,
+                onPlaySong = { title, uriStr ->
+                    // If we have a local URI (freshly downloaded), play directly without
+                    // needing the track to be in the library index yet.
+                    val artist = viewModel.activeDownloadState.value.artist
+                    val started = if (!uriStr.isNullOrBlank()) {
+                        viewModel.playDownloadedSongByUri(title, artist, uriStr)
+                    } else {
+                        viewModel.playSongByTitleOrUri(title, uriStr)
+                    }
+                    // Only navigate to NowPlaying if playback actually started
+                    if (started) {
+                        navController.navigate(SonoraDestination.NowPlaying.route)
+                    }
+                },
+                onOpenPlaylistDetail = { playlistId ->
+                    navController.navigate(SonoraDestination.PlaylistDetail.createRoute(playlistId))
+                },
+                onOpenExternalDownloader = { title, artist, _ ->
+                    viewModel.openExternalDownloader(title, artist)
+                },
+                onOpenWebSearch = viewModel::openWebMusicSearch
+            )
+        }
+
+        composable(
+            route = SonoraDestination.YouTubeImport.route,
+            enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300)) },
+            exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
+        ) {
+            renderImportAudio()
+        }
+
+        composable(
+            route = SonoraDestination.ImportAudio.route,
+            enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300)) },
+            exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
+        ) {
+            renderImportAudio()
         }
     }
 }

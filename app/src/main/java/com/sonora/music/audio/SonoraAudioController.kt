@@ -92,6 +92,11 @@ class SonoraAudioController(
         ) {
             syncPlayerState()
         }
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            android.util.Log.e("SonoraAudioController", "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+            _uiState.update { it.copy(isPlaying = false, isBuffering = false) }
+        }
     }
 
     private fun syncPlayerState() {

@@ -7,6 +7,8 @@ sealed class SonoraDestination(val route: String) {
     object Queue : SonoraDestination("queue")
     object Settings : SonoraDestination("settings")
     object Permissions : SonoraDestination("permissions")
+    object ImportAudio : SonoraDestination("import_audio")
+    object YouTubeImport : SonoraDestination("youtube_import")
 
     // Detail screens
     object AlbumDetail : SonoraDestination("album_detail/{albumId}") {

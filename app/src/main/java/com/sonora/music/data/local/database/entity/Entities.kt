@@ -72,3 +72,21 @@ data class HistoryEntity(
     val songId: Long,
     val playedAt: Long = System.currentTimeMillis()
 )
+
+@Entity(tableName = "download_history")
+data class DownloadHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val videoId: String? = null,
+    val title: String,
+    val artist: String = "",
+    val thumbnailUrl: String? = null,
+    val quality: String = "320 kbps",
+    val fileSizeBytes: Long = 0L,
+    val status: String, // COMPLETED, FAILED, CANCELLED, DOWNLOADING
+    val localFilePath: String? = null,
+    val mediaStoreUri: String? = null,
+    val downloadUrl: String? = null,
+    val errorMessage: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+

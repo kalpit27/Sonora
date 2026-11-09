@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,8 +81,41 @@ fun NowPlayingScreen(
     onToggleFavorite: (Song) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val song = playbackState.currentSong ?: return
     val colors = LocalSonoraColors.current
+    val song = playbackState.currentSong
+    if (song == null) {
+        androidx.compose.foundation.layout.Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(colors.background)
+                .statusBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "No Track Playing",
+                    color = colors.primaryText,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Select any audio track to start playback",
+                    color = colors.secondaryText,
+                    fontSize = 13.sp
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                Button(
+                    onClick = onBack,
+                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent)
+                ) {
+                    Text("Go Back", color = Color.White)
+                }
+            }
+        }
+        return
+    }
     var isUserScrubbing by remember { mutableStateOf(false) }
     var scrubPositionMs by remember { mutableFloatStateOf(0f) }
     var showInfoDialog by remember { mutableStateOf(false) }

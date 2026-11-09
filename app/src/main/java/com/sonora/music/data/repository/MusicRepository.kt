@@ -27,6 +27,10 @@ class MusicRepository(
     private val songDao = database.songDao()
     private val playlistDao = database.playlistDao()
     private val historyDao = database.historyDao()
+    val downloadHistoryDao = database.downloadHistoryDao()
+
+    val downloadHistory: Flow<List<com.sonora.music.data.local.database.entity.DownloadHistoryEntity>> =
+        downloadHistoryDao.getAllHistory()
 
     val allSongs: Flow<List<Song>> = songDao.getAllSongs().map { list ->
         list.map { it.toSong() }
@@ -164,6 +168,14 @@ class MusicRepository(
 
     suspend fun clearHistory() {
         historyDao.clearHistory()
+    }
+
+    suspend fun clearDownloadHistory() {
+        downloadHistoryDao.clearAll()
+    }
+
+    suspend fun deleteDownloadHistoryItem(id: Long) {
+        downloadHistoryDao.deleteById(id)
     }
 
     suspend fun rescanLibrary(): Int {
