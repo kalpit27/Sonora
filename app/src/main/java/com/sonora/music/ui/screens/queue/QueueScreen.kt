@@ -184,6 +184,7 @@ private fun QueueItemRow(
         ) {
             AlbumArtImage(
                 artworkUri = song.albumArtUri,
+                audioUri = song.contentUri,
                 modifier = Modifier.size(40.dp),
                 shape = RoundedCornerShape(8.dp)
             )

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
@@ -35,6 +38,8 @@ import androidx.compose.ui.unit.sp
 import com.sonora.music.data.model.PlaybackUiState
 import com.sonora.music.ui.theme.ElectricOrange
 import com.sonora.music.ui.theme.LocalSonoraColors
+import com.sonora.music.ui.theme.SpotifyCardElevated
+import com.sonora.music.ui.theme.SpotifySurfaceHighlight
 
 @Composable
 fun MiniPlayer(
@@ -42,6 +47,7 @@ fun MiniPlayer(
     onExpandNowPlaying: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
+    onToggleFavorite: (com.sonora.music.data.model.Song) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
@@ -50,36 +56,34 @@ fun MiniPlayer(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .shadow(elevation = 12.dp, shape = RoundedCornerShape(16.dp))
-            .clip(RoundedCornerShape(16.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .shadow(elevation = 14.dp, shape = RoundedCornerShape(10.dp), spotColor = Color.Black.copy(alpha = 0.6f))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onExpandNowPlaying),
         color = colors.elevatedBackground,
-        tonalElevation = 6.dp
+        tonalElevation = 4.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Track playback scrub progress bar on top rim
-            LinearProgressIndicator(
-                progress = { playbackState.progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp),
-                color = colors.accent,
-                trackColor = colors.surfaceVariant
-            )
-
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Mini album art
-                AlbumArtImage(
-                    artworkUri = song.albumArtUri,
-                    modifier = Modifier.size(46.dp),
-                    shape = RoundedCornerShape(10.dp)
-                )
+                // Mini album art with 6dp corner radius
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AlbumArtImage(
+                        artworkUri = song.albumArtUri,
+                        audioUri = song.contentUri,
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(6.dp)
+                    )
+                }
 
                 Spacer(modifier = Modifier.width(12.dp))
 
@@ -91,10 +95,11 @@ fun MiniPlayer(
                         text = song.title,
                         color = colors.primaryText,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 13.5.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = song.artist,
                         color = colors.secondaryText,
@@ -104,11 +109,35 @@ fun MiniPlayer(
                     )
                 }
 
-                // Play / Pause Button with electric orange circular accent
+                // Spotify-style dancing audio visualizer bars
+                if (playbackState.isPlaying) {
+                    MiniEqualizerBars(
+                        isPlaying = true,
+                        color = colors.accent,
+                        modifier = Modifier.padding(horizontal = 6.dp)
+                    )
+                }
+
+                // Like / Favorite toggle synced live
+                IconButton(
+                    onClick = { onToggleFavorite(song) },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = if (song.isFavorite) "Unlike" else "Like",
+                        tint = if (song.isFavorite) colors.accent else colors.secondaryText,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(2.dp))
+
+                // Spotify-style Play / Pause Button with Electric Orange Accent
                 IconButton(
                     onClick = onTogglePlayPause,
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
                         .background(colors.accent)
                 ) {
@@ -116,7 +145,7 @@ fun MiniPlayer(
                         imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
                         tint = Color.White,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
@@ -125,16 +154,27 @@ fun MiniPlayer(
                 // Skip Next Button
                 IconButton(
                     onClick = onSkipNext,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(34.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipNext,
                         contentDescription = "Next Track",
                         tint = colors.primaryText,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
+
+            // Spotify-style bottom-rim progress bar
+            LinearProgressIndicator(
+                progress = { playbackState.progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp),
+                color = colors.accent,
+                trackColor = SpotifySurfaceHighlight.copy(alpha = 0.5f)
+            )
         }
     }
 }
+

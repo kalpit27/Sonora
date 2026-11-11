@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.sonora.music.data.model.AudioQuality
 import com.sonora.music.data.model.SortOption
 import com.sonora.music.data.model.SortOrder
 import com.sonora.music.data.model.ThemeMode
@@ -26,6 +27,29 @@ class SonoraPreferences(private val context: Context) {
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val LAST_PLAYED_SONG_ID = longPreferencesKey("last_played_song_id")
         val LAST_PLAYED_POSITION_MS = longPreferencesKey("last_played_position_ms")
+        val DOWNLOAD_QUALITY = stringPreferencesKey("download_quality")
+        val SHORT_TRACK_MAX_MS = longPreferencesKey("short_track_max_ms")
+    }
+
+    val shortTrackMaxDurationMsFlow: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[Keys.SHORT_TRACK_MAX_MS] ?: 120_000L
+    }
+
+    suspend fun setShortTrackMaxDurationMs(durationMs: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.SHORT_TRACK_MAX_MS] = durationMs.coerceIn(15_000L, 600_000L)
+        }
+    }
+
+    val downloadQualityFlow: Flow<AudioQuality> = context.dataStore.data.map { prefs ->
+        val raw = prefs[Keys.DOWNLOAD_QUALITY] ?: AudioQuality.HIGH_320.name
+        runCatching { AudioQuality.valueOf(raw) }.getOrDefault(AudioQuality.HIGH_320)
+    }
+
+    suspend fun setDownloadQuality(quality: AudioQuality) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DOWNLOAD_QUALITY] = quality.name
+        }
     }
 
     val themeModeFlow: Flow<ThemeMode> = context.dataStore.data.map { prefs ->

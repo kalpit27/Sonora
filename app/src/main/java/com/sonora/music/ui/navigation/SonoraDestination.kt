@@ -26,10 +26,19 @@ sealed class SonoraDestination(val route: String) {
     object FolderDetail : SonoraDestination("folder_detail/{folderName}") {
         fun createRoute(folderName: String) = "folder_detail/${java.net.URLEncoder.encode(folderName, "UTF-8")}"
     }
+
+    object SmartAlbumDetail : SonoraDestination("smart_album/{type}") {
+        fun createRoute(type: com.sonora.music.data.model.SmartAlbumType) = "smart_album/${type.name}"
+    }
+
+    object ListeningDna : SonoraDestination("listening_dna")
+    object MyAnalytics : SonoraDestination("my_analytics")
+    object Duplicates : SonoraDestination("duplicates")
 }
 
 enum class MainTab(val title: String) {
     SONGS("Songs"),
+    SMART_ALBUMS("Smart"),
     ALBUMS("Albums"),
     ARTISTS("Artists"),
     PLAYLISTS("Playlists"),

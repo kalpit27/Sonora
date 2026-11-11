@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -30,14 +31,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Link
@@ -46,10 +50,13 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,6 +78,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -81,7 +89,15 @@ import android.provider.DocumentsContract
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.sonora.music.data.importer.DriveScanSessionState
+import com.sonora.music.data.importer.GoogleDriveImportState
+import com.sonora.music.data.importer.SmartDriveAudioHelper
+import com.sonora.music.data.importer.StagedDriveAudioItem
+import com.sonora.music.ui.components.AlbumArtImage
+import com.sonora.music.ui.theme.SpotifySurfaceHighlight
 import com.sonora.music.data.local.database.entity.DownloadHistoryEntity
 import com.sonora.music.data.model.ActiveDownloadState
 import com.sonora.music.data.model.AudioQuality
@@ -108,8 +124,26 @@ fun YouTubeImportScreen(
     queueOverallProgress: QueueOverallProgress,
     downloadHistory: List<DownloadHistoryEntity>,
     isExternalDownloaderAvailable: Boolean,
+    defaultDownloadQuality: AudioQuality = AudioQuality.HIGH_320,
+    driveImportState: GoogleDriveImportState = GoogleDriveImportState(),
+    driveScanState: DriveScanSessionState = DriveScanSessionState(),
+    drivePreviewUri: String? = null,
+    isDrivePreviewPlaying: Boolean = false,
+    drivePreviewError: String? = null,
     onBack: () -> Unit,
     onFetchYouTubeUrl: (String) -> Unit,
+    onImportGoogleDriveUrl: (String) -> Unit = {},
+    onImportDriveFiles: (List<Uri>) -> Unit = {},
+    onScanDriveFolder: (Uri) -> Unit = {},
+    onToggleDriveItemSelection: (String) -> Unit = {},
+    onToggleSelectAllDriveItems: () -> Unit = {},
+    onToggleDrivePreview: (StagedDriveAudioItem) -> Unit = {},
+    onStartStagedDriveImport: () -> Unit = {},
+    onDismissDriveSelection: () -> Unit = {},
+    onCancelDriveScan: () -> Unit = {},
+    onClearDriveEmptyMessage: () -> Unit = {},
+    onCancelDriveImport: () -> Unit = {},
+    onResetDriveImport: () -> Unit = {},
     onClearPreview: () -> Unit,
     onTogglePlaylistItemSelection: (videoId: String, isSelected: Boolean) -> Unit,
     onSelectAllPlaylistItems: (Boolean) -> Unit,
@@ -180,6 +214,38 @@ fun YouTubeImportScreen(
             }
             customDestinationName = folderName
         }
+    }
+
+    val drivePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri>? ->
+        if (!uris.isNullOrEmpty()) {
+            onImportDriveFiles(uris)
+        }
+    }
+
+    val driveFolderScannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onScanDriveFolder(uri)
+        }
+    }
+
+    val wmaSupported = remember { SmartDriveAudioHelper.isDeviceWmaDecoderAvailable() }
+
+    if (driveScanState.showSelectionModal && driveScanState.items.isNotEmpty()) {
+        SmartDriveAudioSelectionDialog(
+            scanState = driveScanState,
+            previewUri = drivePreviewUri,
+            isPreviewPlaying = isDrivePreviewPlaying,
+            previewError = drivePreviewError,
+            onToggleItem = onToggleDriveItemSelection,
+            onToggleSelectAll = onToggleSelectAllDriveItems,
+            onTogglePreview = onToggleDrivePreview,
+            onConfirmImport = onStartStagedDriveImport,
+            onDismiss = onDismissDriveSelection
+        )
     }
 
     // Synchronize custom titles whenever new videoInfo is loaded
@@ -385,7 +451,7 @@ fun YouTubeImportScreen(
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Paste YouTube Video or Playlist Link",
+                            text = "Paste Music or Cloud Link",
                             color = colors.primaryText,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold
@@ -399,7 +465,7 @@ fun YouTubeImportScreen(
                             },
                             placeholder = {
                                 Text(
-                                    text = "e.g. https://www.youtube.com/watch?v=...",
+                                    text = "YouTube, YouTube Music, or Google Drive link",
                                     color = colors.secondaryText.copy(alpha = 0.6f),
                                     fontSize = 13.sp
                                 )
@@ -521,6 +587,321 @@ fun YouTubeImportScreen(
                 }
             }
 
+            // Smart Drive Import (Audio-Filtered) Card
+            item {
+                Spacer(modifier = Modifier.height(14.dp))
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp)),
+                    color = colors.elevatedBackground
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accent.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudDownload,
+                                    contentDescription = null,
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Smart Drive Audio Import",
+                                    color = colors.primaryText,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                val formatsDesc = if (wmaSupported) {
+                                    "Audio filter: MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, WMA"
+                                } else {
+                                    "Audio filter: MP3, WAV, FLAC, M4A, AAC, OGG, OPUS"
+                                }
+                                Text(
+                                    text = formatsDesc,
+                                    color = colors.secondaryText,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                drivePickerLauncher.launch(SmartDriveAudioHelper.PICKER_AUDIO_MIME_TYPES)
+                            },
+                            enabled = !driveScanState.isScanning && !driveImportState.isImporting,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accent,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AudioFile,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Import from Drive",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedButton(
+                            onClick = { driveFolderScannerLauncher.launch(null) },
+                            enabled = !driveScanState.isScanning && !driveImportState.isImporting,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Scan Folder (Auto-Filter Subfolders)",
+                                color = colors.primaryText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        if (driveScanState.isScanning) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(colors.surface, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = colors.accent,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = driveScanState.scanProgressText.ifBlank { "Filtering audio files..." },
+                                    color = colors.primaryText,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = onCancelDriveScan) {
+                                    Text("Cancel", color = Color(0xFFFF5252), fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        driveScanState.emptyMessage?.let { emptyMsg ->
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFFFFB74D).copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                    .border(1.dp, Color(0xFFFFB74D).copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFB74D),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "No Supported Audio Files Found",
+                                        color = colors.primaryText,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = emptyMsg,
+                                        color = colors.secondaryText,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onClearDriveEmptyMessage,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = colors.secondaryText,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Google Drive Active Import Progress / Completed / Cancelled Card
+            if (driveImportState.isImporting || driveImportState.statusText.isNotBlank() || driveImportState.lastImportedUri != null || driveImportState.errorMessage != null) {
+                item {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp)),
+                        color = colors.elevatedBackground
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = when {
+                                            driveImportState.isImporting -> Icons.Default.CloudDownload
+                                            driveImportState.errorMessage != null || driveImportState.wasCancelled -> Icons.Default.Warning
+                                            else -> Icons.Default.CheckCircle
+                                        },
+                                        contentDescription = null,
+                                        tint = when {
+                                            driveImportState.errorMessage != null -> Color(0xFFFF5252)
+                                            driveImportState.wasCancelled -> Color(0xFFFFB74D)
+                                            else -> colors.accent
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = when {
+                                            driveImportState.isImporting -> "Importing Drive Audio"
+                                            driveImportState.wasCancelled -> "Import Cancelled"
+                                            driveImportState.errorMessage != null -> "Import Failed"
+                                            else -> "Drive Import Complete"
+                                        },
+                                        color = colors.primaryText,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                if (driveImportState.isImporting) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "${driveImportState.progress}%",
+                                            color = colors.accent,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        TextButton(onClick = onCancelDriveImport) {
+                                            Text("Cancel", color = Color(0xFFFF5252), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = onResetDriveImport,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Dismiss",
+                                            tint = colors.secondaryText,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = driveImportState.currentTitle.ifBlank { driveImportState.lastImportedTitle ?: "Google Drive Audio" },
+                                color = colors.primaryText,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            if (driveImportState.currentFilename.isNotBlank() && driveImportState.isImporting) {
+                                Text(
+                                    text = driveImportState.currentFilename,
+                                    color = colors.secondaryText.copy(alpha = 0.75f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Text(
+                                text = driveImportState.errorMessage
+                                    ?: driveImportState.statusText.ifBlank {
+                                        if (driveImportState.isImporting) "Importing..." else "Saved to Offline Library"
+                                    },
+                                color = if (driveImportState.errorMessage != null) Color(0xFFFF5252) else colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+
+                            if (driveImportState.isImporting) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                LinearProgressIndicator(
+                                    progress = { (driveImportState.progress / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = colors.accent,
+                                    trackColor = colors.surfaceVariant
+                                )
+                            }
+
+                            if (!driveImportState.isImporting && driveImportState.lastImportedUri != null) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        onPlaySong(driveImportState.lastImportedTitle ?: "Google Drive Track", driveImportState.lastImportedUri)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Play Offline in Sonora", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Playlist Preview & Batch Selection Card
             item {
                 AnimatedVisibility(
@@ -562,7 +943,7 @@ fun YouTubeImportScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = "${playlist.author} • ${playlist.tracks.size} tracks found • Converted to MP3",
+                                            text = "${playlist.author} • ${playlist.tracks.size} tracks found",
                                             color = colors.secondaryText,
                                             fontSize = 12.sp
                                         )
@@ -716,11 +1097,10 @@ fun YouTubeImportScreen(
                                                         .background(colors.elevatedBackground),
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    AsyncImage(
-                                                        model = track.thumbnailUrl,
-                                                        contentDescription = null,
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
+                                                    AlbumArtImage(
+                                                        artworkUri = track.thumbnailUrl,
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        shape = RoundedCornerShape(6.dp)
                                                     )
                                                 }
 
@@ -805,11 +1185,10 @@ fun YouTubeImportScreen(
                                             .border(1.dp, colors.accent.copy(alpha = 0.3f), RoundedCornerShape(8.dp)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        AsyncImage(
-                                            model = info.thumbnailUrl,
-                                            contentDescription = "Video Thumbnail",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
+                                        AlbumArtImage(
+                                            artworkUri = info.thumbnailUrl,
+                                            modifier = Modifier.fillMaxSize(),
+                                            shape = RoundedCornerShape(8.dp)
                                         )
                                     }
 
@@ -853,63 +1232,25 @@ fun YouTubeImportScreen(
                                 Spacer(modifier = Modifier.height(14.dp))
 
                                 // Audio Information & Conversion Details
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                // Download Quality applied from Settings
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(colors.surface.copy(alpha = 0.6f))
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column {
-                                        Text("Audio Format: MP3 (Audio/MPEG)", color = colors.primaryText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("Converter: FFmpeg Engine", color = colors.secondaryText, fontSize = 10.sp)
-                                    }
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Ready for Offline", color = Color(0xFF4CAF50), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
-                                // Audio Quality Selection
-                                Text(
-                                    text = "Select Audio Quality",
-                                    color = colors.primaryText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    AudioQuality.entries.forEach { quality ->
-                                        FilterChip(
-                                            selected = selectedQuality == quality,
-                                            onClick = { selectedQuality = quality },
-                                            label = {
-                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                    Text(quality.label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                    Text(
-                                                        text = "~${quality.formatEstimatedSize(info.durationSeconds)}",
-                                                        fontSize = 9.sp,
-                                                        color = if (selectedQuality == quality) Color.White.copy(alpha = 0.85f) else colors.secondaryText
-                                                    )
-                                                }
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = colors.accent,
-                                                selectedLabelColor = Color.White
-                                            ),
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
+                                    Text(
+                                        text = "Download Quality",
+                                        color = colors.secondaryText,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = defaultDownloadQuality.label,
+                                        color = colors.accent,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
 
                                 Spacer(modifier = Modifier.height(14.dp))
@@ -1030,7 +1371,7 @@ fun YouTubeImportScreen(
                                         onStartDownload(
                                             info,
                                             streamUrl,
-                                            selectedQuality,
+                                            defaultDownloadQuality,
                                             customTitle,
                                             customArtist,
                                             false,
@@ -1125,7 +1466,7 @@ fun YouTubeImportScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Downloading Audio (${activeDownload.progress}%)",
+                                                text = "Downloading...",
                                                 color = colors.primaryText,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
@@ -1139,7 +1480,7 @@ fun YouTubeImportScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Converting to MP3 (FFmpeg)...",
+                                                text = "Converting Audio...",
                                                 color = colors.accent,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
@@ -1154,7 +1495,7 @@ fun YouTubeImportScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Import & MP3 Conversion Complete!",
+                                                text = "Download Completed",
                                                 color = Color(0xFF4CAF50),
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
@@ -1169,7 +1510,7 @@ fun YouTubeImportScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Import Failed",
+                                                text = "Download Failed",
                                                 color = Color(0xFFFF5252),
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
@@ -1184,7 +1525,7 @@ fun YouTubeImportScreen(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Import Cancelled",
+                                                text = "Download Cancelled",
                                                 color = colors.secondaryText,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
@@ -1232,16 +1573,8 @@ fun YouTubeImportScreen(
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.End
                                 ) {
-                                    Text(
-                                        text = activeDownload.stageDescription ?: "Processing...",
-                                        color = colors.secondaryText,
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
                                     Text(
                                         text = "${activeDownload.progress}%",
                                         color = colors.accent,
@@ -1270,16 +1603,12 @@ fun YouTubeImportScreen(
                                                     .background(colors.elevatedBackground),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                if (!activeDownload.thumbnailUrl.isNullOrBlank()) {
-                                                    AsyncImage(
-                                                        model = activeDownload.thumbnailUrl,
-                                                        contentDescription = null,
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                } else {
-                                                    Icon(Icons.Default.MusicNote, contentDescription = null, tint = colors.accent)
-                                                }
+                                                AlbumArtImage(
+                                                    artworkUri = activeDownload.thumbnailUrl,
+                                                    audioUri = activeDownload.localUri,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    shape = RoundedCornerShape(8.dp)
+                                                )
                                             }
 
                                             Spacer(modifier = Modifier.width(12.dp))
@@ -1304,28 +1633,17 @@ fun YouTubeImportScreen(
                                                     modifier = Modifier.padding(top = 2.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
+                                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(12.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
                                                     Text(
-                                                        text = "Format: MP3 (${activeDownload.quality.label})",
-                                                        color = colors.accent,
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.SemiBold
-                                                    )
-                                                    Text(
-                                                        text = " • Local Offline Ready",
+                                                        text = "Ready in Sonora Library",
                                                         color = Color(0xFF4CAF50),
-                                                        fontSize = 10.sp,
+                                                        fontSize = 11.sp,
                                                         fontWeight = FontWeight.Bold
                                                     )
                                                 }
                                             }
                                         }
-
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Text(
-                                            text = "Saved to: Music/Sonora. Successfully added to Sonora Music Library.",
-                                            color = colors.secondaryText,
-                                            fontSize = 10.sp
-                                        )
                                     }
                                 }
 
@@ -1391,14 +1709,14 @@ fun YouTubeImportScreen(
                                             Spacer(modifier = Modifier.width(8.dp))
                                         }
                                         Text(
-                                            text = if (queueOverallProgress.isQueueActive) "Importing Playlist Queue (MP3)" else "Playlist Import Summary",
+                                            text = if (queueOverallProgress.isQueueActive) "Downloading Playlist..." else "Playlist Download Summary",
                                             color = colors.primaryText,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp
                                         )
                                     }
                                     Text(
-                                        text = "${queueOverallProgress.targetPlaylistName ?: "Playlist"} • ${queueOverallProgress.completedTracks} of ${queueOverallProgress.totalTracks} converted to MP3",
+                                        text = "${queueOverallProgress.targetPlaylistName ?: "Playlist"} • ${queueOverallProgress.completedTracks} of ${queueOverallProgress.totalTracks} downloaded",
                                         color = colors.secondaryText,
                                         fontSize = 12.sp
                                     )
@@ -1505,11 +1823,10 @@ fun YouTubeImportScreen(
                                                     .background(colors.elevatedBackground),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                AsyncImage(
-                                                    model = qItem.thumbnailUrl,
-                                                    contentDescription = null,
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier.fillMaxSize()
+                                                AlbumArtImage(
+                                                    artworkUri = qItem.thumbnailUrl,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    shape = RoundedCornerShape(6.dp)
                                                 )
                                             }
 
@@ -1538,7 +1855,7 @@ fun YouTubeImportScreen(
                                                 } else {
                                                     Text(
                                                         text = when (qItem.status) {
-                                                            DownloadStatus.COMPLETED -> if (qItem.isDuplicate) "Already in Library" else "Downloaded as MP3"
+                                                            DownloadStatus.COMPLETED -> if (qItem.isDuplicate) "Already in Library" else "Downloaded"
                                                             DownloadStatus.PENDING -> "Pending in queue"
                                                             DownloadStatus.FAILED -> "Failed: ${qItem.errorMessage ?: ""}"
                                                             DownloadStatus.CANCELLED -> "Cancelled"
@@ -1680,21 +1997,12 @@ fun YouTubeImportScreen(
                                     .background(colors.surface),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (!item.thumbnailUrl.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = item.thumbnailUrl,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Default.MusicNote,
-                                        contentDescription = null,
-                                        tint = colors.accent,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
+                                AlbumArtImage(
+                                    artworkUri = item.thumbnailUrl,
+                                    audioUri = item.mediaStoreUri,
+                                    modifier = Modifier.fillMaxSize(),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
                             }
 
                             Spacer(modifier = Modifier.width(12.dp))
@@ -1783,6 +2091,279 @@ fun YouTubeImportScreen(
 
             item {
                 Spacer(modifier = Modifier.height(40.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmartDriveAudioSelectionDialog(
+    scanState: DriveScanSessionState,
+    previewUri: String?,
+    isPreviewPlaying: Boolean,
+    previewError: String?,
+    onToggleItem: (String) -> Unit,
+    onToggleSelectAll: () -> Unit,
+    onTogglePreview: (StagedDriveAudioItem) -> Unit,
+    onConfirmImport: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalSonoraColors.current
+    val items = scanState.items
+    val selectableItems = items.filter { !it.isDuplicate }
+    val selectedCount = selectableItems.count { it.isSelected }
+    val allSelectableChecked = selectableItems.isNotEmpty() && selectedCount == selectableItems.size
+    val duplicateCount = items.count { it.isDuplicate }
+    val filteredOutCount = scanState.skippedNonAudioCount + scanState.skippedUnsupportedCount
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .clip(RoundedCornerShape(24.dp)),
+            colors = CardDefaults.cardColors(containerColor = colors.elevatedBackground),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Drive Audio Files",
+                            color = colors.primaryText,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${items.size} supported audio track${if (items.size == 1) "" else "s"} ready",
+                            color = colors.secondaryText,
+                            fontSize = 12.sp
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = colors.secondaryText)
+                    }
+                }
+
+                if (filteredOutCount > 0 || duplicateCount > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val infoMsg = buildList {
+                        if (filteredOutCount > 0) add("$filteredOutCount non-audio/unsupported hidden")
+                        if (duplicateCount > 0) add("$duplicateCount already in library")
+                    }.joinToString(" • ")
+                    Text(
+                        text = infoMsg,
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFFFB74D).copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+
+                if (previewError != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = previewError,
+                        color = Color(0xFFFF5252),
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFFF5252).copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Select All + Total Selected Count Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.surface, RoundedCornerShape(12.dp))
+                        .clickable(enabled = selectableItems.isNotEmpty()) { onToggleSelectAll() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = allSelectableChecked,
+                            onCheckedChange = { onToggleSelectAll() },
+                            enabled = selectableItems.isNotEmpty(),
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = colors.accent,
+                                uncheckedColor = colors.secondaryText
+                            )
+                        )
+                        Text(
+                            text = if (allSelectableChecked) "Deselect All" else "Select All",
+                            color = colors.primaryText,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        text = "$selectedCount selected",
+                        color = if (selectedCount > 0) colors.accent else colors.secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Scrollable Filtered Audio List
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(items, key = { it.uriString }) { item ->
+                        val isPreviewingThis = previewUri == item.uriString && isPreviewPlaying
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .alpha(if (item.isDuplicate) 0.58f else 1f)
+                                .background(colors.surface, RoundedCornerShape(12.dp))
+                                .border(
+                                    width = if (isPreviewingThis) 1.dp else 0.dp,
+                                    color = if (isPreviewingThis) colors.accent else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable(enabled = !item.isDuplicate) { onToggleItem(item.uriString) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = item.isSelected,
+                                onCheckedChange = { onToggleItem(item.uriString) },
+                                enabled = !item.isDuplicate,
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = colors.accent,
+                                    uncheckedColor = colors.secondaryText
+                                )
+                            )
+
+                            // Artwork Thumbnail or Fallback
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.elevatedBackground),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = colors.accent.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                if (!item.artworkUriString.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = item.artworkUriString,
+                                        contentDescription = item.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title,
+                                    color = colors.primaryText,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${item.artist} • ${item.album}",
+                                    color = colors.secondaryText,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val metaParts = buildList {
+                                    add(item.formatLabel)
+                                    val dur = SmartDriveAudioHelper.formatDuration(item.durationMs)
+                                    if (dur != "--:--") add(dur)
+                                    val sz = SmartDriveAudioHelper.formatFileSize(item.fileSizeBytes)
+                                    if (sz.isNotBlank()) add(sz)
+                                    if (item.isDuplicate) add(item.duplicateReason ?: "Duplicate")
+                                }
+                                Text(
+                                    text = metaParts.joinToString(" · "),
+                                    color = if (item.isDuplicate) Color(0xFFFFB74D) else colors.accent.copy(alpha = 0.9f),
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Preview Play/Stop Toggle
+                            IconButton(onClick = { onTogglePreview(item) }) {
+                                Icon(
+                                    imageVector = if (isPreviewingThis) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                    contentDescription = if (isPreviewingThis) "Stop Preview" else "Preview Song",
+                                    tint = if (isPreviewingThis) colors.accent else colors.primaryText,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Footer Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                    ) {
+                        Text("Cancel", color = colors.primaryText, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = onConfirmImport,
+                        enabled = selectedCount > 0,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.accent,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1.4f)
+                            .height(44.dp)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Import ($selectedCount)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
             }
         }
     }

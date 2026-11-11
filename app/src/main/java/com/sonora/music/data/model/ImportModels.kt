@@ -11,7 +11,8 @@ enum class DownloadStatus {
 }
 
 enum class AudioQuality(val label: String, val bitrateKbps: Int) {
-    HIGH_320("320 kbps (High)", 320),
+    HIGH_320("320 kbps (High Quality)", 320),
+    VERY_HIGH_256("256 kbps (Very High)", 256),
     MEDIUM_192("192 kbps (Balanced)", 192),
     STANDARD_128("128 kbps (Compact)", 128);
 
@@ -24,6 +25,13 @@ enum class AudioQuality(val label: String, val bitrateKbps: Int) {
         val bytes = estimateSizeBytes(durationSeconds)
         val mb = bytes.toDouble() / (1024 * 1024)
         return "%.1f MB".format(mb)
+    }
+
+    companion object {
+        fun fromLabel(label: String): AudioQuality {
+            return entries.find { it.label == label || it.label.contains(label) || it.name.equals(label, ignoreCase = true) }
+                ?: HIGH_320
+        }
     }
 }
 

@@ -18,13 +18,32 @@ data class Song(
     val mimeType: String = "",
     val isFavorite: Boolean = false,
     val playCount: Int = 0,
-    val lastPlayedTimestamp: Long = 0
+    val lastPlayedTimestamp: Long = 0,
+    val skipCount: Int = 0,
+    val totalListeningTimeMs: Long = 0,
+    val lastCompletedTimestamp: Long = 0,
+    val originalTitle: String = title,
+    val originalArtist: String = artist,
+    val originalAlbum: String = album
 ) {
     val contentUri: Uri
-        get() = Uri.parse(contentUriString)
+        get() {
+            val str = contentUriString.trim()
+            return if (str.startsWith("content://") || str.startsWith("file://") || str.startsWith("http://") || str.startsWith("https://")) {
+                Uri.parse(str)
+            } else {
+                Uri.fromFile(java.io.File(str))
+            }
+        }
 
     val albumArtUri: Uri?
-        get() = albumArtUriString?.let { Uri.parse(it) }
+        get() = albumArtUriString?.trim()?.let { str ->
+            if (str.startsWith("content://") || str.startsWith("file://") || str.startsWith("http://") || str.startsWith("https://")) {
+                Uri.parse(str)
+            } else {
+                Uri.fromFile(java.io.File(str))
+            }
+        }
 
     val formattedDuration: String
         get() {

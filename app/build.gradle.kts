@@ -79,6 +79,9 @@ dependencies {
     // Coil Image Loading
     implementation(libs.coil.compose)
 
+    // Palette API for Dynamic Now-Playing Themes
+    implementation("androidx.palette:palette-ktx:1.0.0")
+
     // Coroutines
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)

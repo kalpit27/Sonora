@@ -17,16 +17,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoGraph
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsBrightness
 import androidx.compose.material.icons.filled.Sort
-import androidx.compose.material.icons.filled.SurroundSound
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
@@ -37,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +57,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.sonora.music.data.model.AudioQuality
 import com.sonora.music.data.model.SortOption
 import com.sonora.music.data.model.SortOrder
 import com.sonora.music.data.model.ThemeMode
@@ -62,17 +72,52 @@ fun SettingsScreen(
     currentSortOrder: SortOrder,
     isHistoryEnabled: Boolean,
     isScanning: Boolean,
+    currentDownloadQuality: AudioQuality = AudioQuality.HIGH_320,
+    shortTrackMaxDurationMs: Long = 120_000L,
     onBack: () -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
     onSetSorting: (SortOption, SortOrder) -> Unit,
     onSetHistoryEnabled: (Boolean) -> Unit,
+    onSetDownloadQuality: (AudioQuality) -> Unit = {},
+    onSetShortTrackMaxDurationMs: (Long) -> Unit = {},
+    onOpenMyAnalytics: () -> Unit = {},
+    onOpenListeningDna: () -> Unit = {},
+    onOpenDuplicates: () -> Unit = {},
     onClearHistory: () -> Unit,
     onRescanLibrary: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val colors = LocalSonoraColors.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     var showSortDialog by remember { mutableStateOf(false) }
     var showClearHistoryDialog by remember { mutableStateOf(false) }
+    var showDownloadQualityDialog by remember { mutableStateOf(false) }
+    var showShortTrackDialog by remember { mutableStateOf(false) }
+    var showEqualizerDialog by remember { mutableStateOf(false) }
+    val eqManager = remember { com.sonora.music.audio.SonoraEqualizerManager.getInstance(context) }
+
+    if (showShortTrackDialog) {
+        ShortTrackThresholdDialog(
+            currentMs = shortTrackMaxDurationMs,
+            onDismiss = { showShortTrackDialog = false },
+            onApply = onSetShortTrackMaxDurationMs
+        )
+    }
+
+    if (showEqualizerDialog) {
+        com.sonora.music.ui.screens.player.EqualizerDialog(
+            equalizerManager = eqManager,
+            onDismiss = { showEqualizerDialog = false }
+        )
+    }
+
+    if (showDownloadQualityDialog) {
+        DownloadQualityDialog(
+            currentQuality = currentDownloadQuality,
+            onDismiss = { showDownloadQualityDialog = false },
+            onApply = onSetDownloadQuality
+        )
+    }
 
     if (showSortDialog) {
         SortDialog(
@@ -244,12 +289,255 @@ fun SettingsScreen(
                             )
                         }
                     }
+
+                    Divider(color = colors.divider, modifier = Modifier.padding(vertical = 10.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showShortTrackDialog = true }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Timer,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Short Tracks Threshold",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Include tracks under ${shortTrackMaxDurationMs / 1000} seconds in Short Tracks",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    Divider(color = colors.divider, modifier = Modifier.padding(vertical = 10.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenDuplicates)
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Duplicate Audio Files",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Detect and clean up duplicate local tracks",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = colors.secondaryText
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Section 3: Listening History
+            // Dedicated Analytics & Listening Insights Section
+            SettingsSectionHeader(title = "Analytics & Listening DNA")
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp)),
+                color = colors.elevatedBackground
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenMyAnalytics)
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Analytics,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "My Analytics",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Listening hours graphs, trends, artists, top tracks & insights",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = colors.accent
+                        )
+                    }
+
+                    Divider(color = colors.divider, modifier = Modifier.padding(vertical = 10.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenListeningDna)
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoGraph,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Your Listening DNA",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Top 5 artists, favorite albums & monthly habit snapshot",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = colors.secondaryText
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Section 2.5: Audio & Sound Effects
+            SettingsSectionHeader(title = "Audio & Sound Effects")
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp)),
+                color = colors.elevatedBackground
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showEqualizerDialog = true }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Audio Equalizer & Bass Boost",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Customize frequency curves, sound presets & bass boost",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Section 3: Audio Downloads & Quality
+            SettingsSectionHeader(title = "Downloads & Quality")
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp)),
+                color = colors.elevatedBackground
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showDownloadQualityDialog = true }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Download Quality",
+                                color = colors.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "${currentDownloadQuality.label} • Default for all downloads",
+                                color = colors.secondaryText,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Section 4: Listening History
             SettingsSectionHeader(title = "History & Privacy")
 
             Surface(
@@ -347,7 +635,7 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.SurroundSound,
+                            imageVector = Icons.Default.GraphicEq,
                             contentDescription = null,
                             tint = colors.accent,
                             modifier = Modifier.size(24.dp)
@@ -462,4 +750,163 @@ private fun ThemeOptionRow(
             colors = RadioButtonDefaults.colors(selectedColor = colors.accent)
         )
     }
+}
+
+@Composable
+fun DownloadQualityDialog(
+    currentQuality: AudioQuality,
+    onDismiss: () -> Unit,
+    onApply: (AudioQuality) -> Unit
+) {
+    val colors = LocalSonoraColors.current
+    var selectedQuality by remember { mutableStateOf(currentQuality) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Default Download Quality",
+                color = colors.primaryText,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Selected quality will automatically apply to all audio downloads without asking each time.",
+                    color = colors.secondaryText,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                AudioQuality.entries.forEach { quality ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { selectedQuality = quality }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedQuality == quality,
+                            onClick = { selectedQuality = quality },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = colors.accent,
+                                unselectedColor = colors.secondaryText
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = quality.label,
+                                color = colors.primaryText,
+                                fontSize = 14.sp,
+                                fontWeight = if (selectedQuality == quality) FontWeight.Bold else FontWeight.Normal
+                            )
+                            Text(
+                                text = "~${quality.formatEstimatedSize(210L)} per standard song",
+                                color = colors.secondaryText,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onApply(selectedQuality)
+                    onDismiss()
+                }
+            ) {
+                Text("Save", color = colors.accent, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.secondaryText)
+            }
+        },
+        containerColor = colors.surface,
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+
+@Composable
+fun ShortTrackThresholdDialog(
+    currentMs: Long,
+    onDismiss: () -> Unit,
+    onApply: (Long) -> Unit
+) {
+    val colors = LocalSonoraColors.current
+    val presets = listOf(
+        30_000L to "30 seconds",
+        60_000L to "1 minute",
+        90_000L to "1.5 minutes",
+        120_000L to "2 minutes (Default)",
+        180_000L to "3 minutes"
+    )
+    var selectedMs by remember { mutableStateOf(currentMs) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Short Tracks Max Duration",
+                color = colors.primaryText,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                presets.forEach { (ms, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { selectedMs = ms }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedMs == ms,
+                            onClick = { selectedMs = ms },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = colors.accent,
+                                unselectedColor = colors.secondaryText
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = label,
+                            color = colors.primaryText,
+                            fontSize = 14.sp,
+                            fontWeight = if (selectedMs == ms) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onApply(selectedMs)
+                    onDismiss()
+                }
+            ) {
+                Text("Save", color = colors.accent, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.secondaryText)
+            }
+        },
+        containerColor = colors.surface,
+        shape = RoundedCornerShape(16.dp)
+    )
 }

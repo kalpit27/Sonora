@@ -128,6 +128,7 @@ class FFmpegAudioConverter(private val context: Context) {
         quality: AudioQuality = AudioQuality.HIGH_320,
         title: String = "",
         artist: String = "",
+        artworkBytes: ByteArray? = null,
         onProgress: (percent: Int, stage: String) -> Unit = { _, _ -> }
     ): Result<File> = withContext(Dispatchers.IO) {
         if (!sourceFile.exists() || sourceFile.length() == 0L) {
@@ -139,13 +140,13 @@ class FFmpegAudioConverter(private val context: Context) {
         val safeTitle = title.trim().ifBlank { "Sonora Audio" }
         val safeArtist = artist.trim().ifBlank { "YouTube Import" }
 
-        onProgress(10, "Initializing audio format conversion to MP3...")
+        onProgress(10, "Converting Audio...")
 
         // Step 1: Attempt conversion via FFmpeg binary if present on device
         val ffmpegPath = findFFmpegBinary()
         if (ffmpegPath != null) {
             try {
-                onProgress(25, "Running FFmpeg MP3 encoder (${quality.bitrateKbps} kbps)...")
+                onProgress(25, "Converting Audio...")
                 val cmd = buildFFmpegCommand(ffmpegPath, sourceFile, targetMp3File, quality, safeTitle, safeArtist)
                 val process = ProcessBuilder(cmd)
                     .redirectErrorStream(true)
@@ -158,7 +159,10 @@ class FFmpegAudioConverter(private val context: Context) {
 
                 val exitCode = process.waitFor()
                 if (exitCode == 0 && targetMp3File.exists() && targetMp3File.length() > 0) {
-                    onProgress(100, "FFmpeg MP3 conversion complete")
+                    val id3Tag = buildId3v2Tag(safeTitle, safeArtist, "Sonora Imports", artworkBytes = artworkBytes)
+                    embedId3Tag(targetMp3File, id3Tag)
+
+                    onProgress(100, "Converting Audio...")
                     cleanupFiles(sourceFile)
                     return@withContext Result.success(targetMp3File)
                 }
@@ -167,31 +171,37 @@ class FFmpegAudioConverter(private val context: Context) {
             }
         }
 
-        // Step 2: Native Android Audio Conversion & ID3 Tagging Engine
-        onProgress(35, "Converting audio stream to MP3 container...")
+        // Step 2: Native Android Audio Extraction & Demuxing Pipeline
+        onProgress(35, "Processing Audio...")
         try {
             val success = convertAudioNative(sourceFile, targetMp3File, quality, safeTitle, safeArtist) { pct, stage ->
                 onProgress(35 + (pct * 0.6).toInt(), stage)
             }
 
             if (success && targetMp3File.exists() && targetMp3File.length() > 0) {
-                onProgress(100, "MP3 processing completed successfully")
+                // Only embed ID3v2 tags into genuine MP3 files; never into MP4/M4A containers
+                if (isMp3Stream(targetMp3File)) {
+                    val id3Tag = buildId3v2Tag(safeTitle, safeArtist, "Sonora Imports", artworkBytes = artworkBytes)
+                    embedId3Tag(targetMp3File, id3Tag)
+                }
+
+                onProgress(100, "Processing Audio...")
                 cleanupFiles(sourceFile)
                 Result.success(targetMp3File)
             } else {
                 cleanupFiles(targetMp3File)
-                Result.failure(IllegalStateException("Native audio conversion did not produce a valid MP3 file"))
+                Result.failure(IllegalStateException("Audio extraction did not produce a valid audio file"))
             }
         } catch (e: Exception) {
             cleanupFiles(targetMp3File)
-            Result.failure(Exception("Audio conversion failed: ${e.message}", e))
+            Result.failure(Exception("Audio extraction failed: ${e.message}", e))
         }
     }
 
     /**
-     * Native Android Audio Conversion Pipeline.
-     * Decodes source audio via MediaExtractor / MediaCodec into 16-bit PCM WAV,
-     * and encodes it into authentic, compliant MP3 format using the LAME MP3 engine with ID3v2.3 tags.
+     * Native Android Audio Processing Pipeline.
+     * Extracts pristine audio from container formats (M4A/MP4/WebM) with zero quality loss,
+     * demuxing clean stereo streams via MediaExtractor & MediaMuxer in milliseconds.
      */
     private fun convertAudioNative(
         sourceFile: File,
@@ -207,67 +217,37 @@ class FFmpegAudioConverter(private val context: Context) {
         // Case 1: Source is already an MP3 stream
         if (isMp3Stream(sourceFile)) {
             val id3Tag = buildId3v2Tag(safeTitle, safeArtist, "Sonora Imports")
-            onProgress(60, "Writing MP3 ID3 metadata...")
+            onProgress(60, "Processing Audio...")
             FileOutputStream(targetMp3File).use { out ->
                 out.write(id3Tag)
-                FileInputStream(sourceFile).use { inStream ->
+                java.io.BufferedInputStream(FileInputStream(sourceFile)).use { inStream ->
                     skipExistingId3Tag(inStream)
                     inStream.copyTo(out)
                 }
             }
-            onProgress(100, "MP3 file ready")
+            onProgress(100, "Processing Audio...")
             return true
         }
 
-        // Case 2: Decode compressed audio (AAC in MP4/M4A, Opus in WebM, etc.)
-        // to PCM WAV and encode into authentic MP3 via LAME engine
-        val tempWavFile = File(sourceFile.parentFile, "sonora_pcm_${System.currentTimeMillis()}.wav")
-        try {
-            onProgress(35, "Decoding audio stream via MediaCodec...")
-            val decoded = decodeAudioToWav(sourceFile, tempWavFile) { pct, stage ->
-                onProgress(pct, stage)
-            }
-
-            if (decoded && tempWavFile.exists() && tempWavFile.length() > 44) {
-                onProgress(65, "Encoding MP3 audio via LAME engine (${quality.bitrateKbps} kbps)...")
-                val lameArgs = arrayOf(
-                    "-b", "${quality.bitrateKbps}",
-                    "--tt", safeTitle,
-                    "--ta", safeArtist,
-                    "--tl", "Sonora Imports",
-                    tempWavFile.absolutePath,
-                    targetMp3File.absolutePath
-                )
-                de.sciss.jump3r.Main().run(lameArgs)
-
-                if (targetMp3File.exists() && targetMp3File.length() > 0) {
-                    onProgress(100, "MP3 conversion complete")
-                    return true
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            tempWavFile.delete()
-        }
-
-        // Case 3: Resilient fallback - demux clean audio track without any corrupting header prefix
-        // so ExoPlayer and MediaStore can play it seamlessly
-        onProgress(85, "Packaging clean audio stream...")
-        if (sourceFile.name.endsWith(".mp4", ignoreCase = true)) {
+        // Case 2: MP4 / M4A container (AAC stereo stream from YouTube)
+        // Demux clean audio track using MediaExtractor & MediaMuxer into authentic audio container
+        onProgress(60, "Processing Audio...")
+        if (sourceFile.name.endsWith(".mp4", ignoreCase = true) || sourceFile.name.endsWith(".m4a", ignoreCase = true)) {
             val demuxSuccess = demuxAudioTrack(sourceFile, targetMp3File)
             if (demuxSuccess && targetMp3File.exists() && targetMp3File.length() > 0) {
-                onProgress(100, "Audio stream ready")
+                onProgress(100, "Processing Audio...")
                 return true
             }
         }
 
-        // Direct clean stream copy
+        // Case 3: Direct clean stream copy (for audio-only streams)
+        onProgress(80, "Processing Audio...")
         FileOutputStream(targetMp3File).use { out ->
             FileInputStream(sourceFile).use { inStream ->
                 inStream.copyTo(out)
             }
         }
+        onProgress(100, "Processing Audio...")
         return targetMp3File.exists() && targetMp3File.length() > 0
     }
 
@@ -360,7 +340,7 @@ class FFmpegAudioConverter(private val context: Context) {
 
                         if (durationUs > 0) {
                             val progress = ((bufferInfo.presentationTimeUs.toDouble() / durationUs.toDouble()) * 25).toInt().coerceIn(0, 25)
-                            onProgress(35 + progress, "Decoding audio stream ($progress%)...")
+                            onProgress(35 + progress, "Converting Audio...")
                         }
                     }
                     if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -526,7 +506,7 @@ class FFmpegAudioConverter(private val context: Context) {
     /**
      * Checks if a file begins with an MP3 frame sync (0xFF 0xFB/0xFA/0xF3/0xF2) or ID3 tag.
      */
-    private fun isMp3Stream(file: File): Boolean {
+    fun isMp3Stream(file: File): Boolean {
         try {
             FileInputStream(file).use { input ->
                 val header = ByteArray(3)
@@ -550,17 +530,20 @@ class FFmpegAudioConverter(private val context: Context) {
      * Skips existing ID3v2 header if present in the stream.
      */
     private fun skipExistingId3Tag(input: InputStream) {
-        input.mark(10)
+        val buffered = if (input.markSupported()) input else java.io.BufferedInputStream(input)
+        buffered.mark(10)
         val header = ByteArray(10)
-        val read = input.read(header)
+        val read = buffered.read(header)
         if (read == 10 && header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
             val size = ((header[6].toInt() and 0x7F) shl 21) or
                     ((header[7].toInt() and 0x7F) shl 14) or
                     ((header[8].toInt() and 0x7F) shl 7) or
                     (header[9].toInt() and 0x7F)
-            input.skip(size.toLong())
+            buffered.skip(size.toLong())
         } else {
-            input.reset()
+            try {
+                buffered.reset()
+            } catch (ignored: Exception) {}
         }
     }
 
@@ -720,13 +703,14 @@ class FFmpegAudioConverter(private val context: Context) {
     }
 
     /**
-     * Builds standard ID3v2.3 tag binary payload with UTF-8 text frames.
+     * Builds standard ID3v2.3 tag binary payload with UTF-8 text frames and optional APIC cover art.
      */
     fun buildId3v2Tag(
         title: String,
         artist: String,
         album: String = "Sonora Imports",
-        year: String = "2026"
+        year: String = "2026",
+        artworkBytes: ByteArray? = null
     ): ByteArray {
         val framesStream = ByteArrayOutputStream()
 
@@ -761,6 +745,29 @@ class FFmpegAudioConverter(private val context: Context) {
         writeFrame("TYER", year)
         writeFrame("TSSE", "Sonora FFmpeg Audio Converter")
 
+        // Write ID3v2.3 APIC (Attached Picture) frame for cover artwork
+        if (artworkBytes != null && artworkBytes.isNotEmpty()) {
+            val mimeType = "image/jpeg"
+            val frameData = ByteArrayOutputStream()
+            frameData.write(0x00) // ISO-8859-1 text encoding for description
+            frameData.write(mimeType.toByteArray(Charsets.US_ASCII))
+            frameData.write(0x00) // Null terminator for MIME type string
+            frameData.write(0x03) // Picture type: 0x03 is Cover (front)
+            frameData.write(0x00) // Null byte for empty description string
+            frameData.write(artworkBytes) // Binary JPEG/PNG image bytes
+
+            val payload = frameData.toByteArray()
+            framesStream.write("APIC".toByteArray(Charsets.US_ASCII))
+            val size = payload.size
+            framesStream.write((size shr 24) and 0xFF)
+            framesStream.write((size shr 16) and 0xFF)
+            framesStream.write((size shr 8) and 0xFF)
+            framesStream.write(size and 0xFF)
+            framesStream.write(0x00)
+            framesStream.write(0x00)
+            framesStream.write(payload)
+        }
+
         val framesBytes = framesStream.toByteArray()
         val tagStream = ByteArrayOutputStream()
 
@@ -779,6 +786,34 @@ class FFmpegAudioConverter(private val context: Context) {
 
         tagStream.write(framesBytes)
         return tagStream.toByteArray()
+    }
+
+    /**
+     * Embeds an ID3v2 binary tag header onto an existing MP3 file.
+     * Note: ID3 headers are strictly embedded ONLY on genuine MP3 files.
+     * Prepending ID3 to an MP4/M4A/WebM container corrupts container headers.
+     */
+    fun embedId3Tag(mp3File: File, tagBytes: ByteArray) {
+        if (!mp3File.exists() || mp3File.length() == 0L || tagBytes.isEmpty()) return
+        if (!isMp3Stream(mp3File)) return
+
+        try {
+            val tempTagged = File(mp3File.parentFile, "tagged_${System.currentTimeMillis()}.mp3")
+            FileOutputStream(tempTagged).use { out ->
+                out.write(tagBytes)
+                java.io.BufferedInputStream(FileInputStream(mp3File)).use { inStream ->
+                    skipExistingId3Tag(inStream)
+                    inStream.copyTo(out)
+                }
+                out.flush()
+            }
+            if (tempTagged.exists() && tempTagged.length() > tagBytes.size) {
+                mp3File.delete()
+                tempTagged.renameTo(mp3File)
+            } else {
+                tempTagged.delete()
+            }
+        } catch (ignored: Exception) {}
     }
 
     /**

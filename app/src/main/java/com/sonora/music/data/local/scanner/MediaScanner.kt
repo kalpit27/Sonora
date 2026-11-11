@@ -35,8 +35,8 @@ class MediaScanner(private val context: Context) {
             MediaStore.Audio.Media.DATA
         )
 
-        // Filter out ringtones/notifications, and sound files under 5 seconds
-        val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 5000"
+        // Filter out ringtones/notifications, but include all music and Sonora directory files
+        val selection = "(${MediaStore.Audio.Media.IS_MUSIC} != 0 OR ${MediaStore.Audio.Media.DATA} LIKE '%/Sonora/%' OR ${MediaStore.Audio.Media.DATA} LIKE '%/Music/%') AND (${MediaStore.Audio.Media.IS_RINGTONE} == 0 AND ${MediaStore.Audio.Media.IS_NOTIFICATION} == 0 AND ${MediaStore.Audio.Media.IS_ALARM} == 0)"
         val sortOrder = "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC"
 
         try {

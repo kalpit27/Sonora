@@ -47,6 +47,9 @@ interface DownloadHistoryDao {
     @Query("DELETE FROM download_history WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("UPDATE download_history SET thumbnailUrl = :thumbnailUrl WHERE id = :id")
+    suspend fun updateThumbnail(id: Long, thumbnailUrl: String)
+
     @Query("DELETE FROM download_history")
     suspend fun clearAll()
 }

@@ -1,11 +1,17 @@
 package com.sonora.music.ui.components
 
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -13,11 +19,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material3.AlertDialog
@@ -39,9 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.File
 import com.sonora.music.data.model.Playlist
 import com.sonora.music.data.model.Song
 import com.sonora.music.data.model.SortOption
@@ -256,6 +267,11 @@ fun SongInfoDialog(
                 InfoRow("Folder", song.folderName)
                 InfoRow("Format", song.mimeType)
                 InfoRow("Play Count", "${song.playCount} times")
+                val mins = (song.totalListeningTimeMs / 60_000L)
+                InfoRow("Listened", "${mins}m ${(song.totalListeningTimeMs % 60_000L) / 1000L}s")
+                if (song.skipCount > 0) {
+                    InfoRow("Skips", "${song.skipCount}")
+                }
             }
         },
         confirmButton = {
@@ -437,6 +453,166 @@ fun ConfirmDeleteDialog(
                 )
             ) {
                 Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.secondaryText)
+            }
+        }
+    )
+}
+
+fun copyPickedImageToAppStorage(context: Context, sourceUri: Uri, filePrefix: String): String? {
+    return try {
+        val dir = File(context.filesDir, "custom_art").apply { if (!exists()) mkdirs() }
+        val destFile = File(dir, "${filePrefix}_${System.currentTimeMillis()}.jpg")
+        context.contentResolver.openInputStream(sourceUri)?.use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        if (destFile.exists() && destFile.length() > 0L) Uri.fromFile(destFile).toString() else null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+fun formatListeningDuration(ms: Long): String {
+    val totalMinutes = (ms / 60_000L).coerceAtLeast(0L)
+    val hours = totalMinutes / 60L
+    val mins = totalMinutes % 60L
+    return when {
+        hours > 0 -> "${hours}h ${mins}m"
+        totalMinutes > 0 -> "${totalMinutes}m"
+        ms > 0 -> "${(ms / 1000L).coerceAtLeast(1L)}s"
+        else -> "0m"
+    }
+}
+
+@Composable
+fun EditSongMetadataDialog(
+    song: Song,
+    onDismiss: () -> Unit,
+    onSave: (title: String?, artist: String?, album: String?, year: Int?, artworkUri: String?) -> Unit
+) {
+    val colors = LocalSonoraColors.current
+    val context = LocalContext.current
+    var title by remember { mutableStateOf(song.title) }
+    var artist by remember { mutableStateOf(song.artist) }
+    var album by remember { mutableStateOf(song.album) }
+    var yearText by remember { mutableStateOf(if (song.year > 0) song.year.toString() else "") }
+    var customArtUri by remember { mutableStateOf(song.albumArtUriString) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { pickedUri ->
+        if (pickedUri != null) {
+            copyPickedImageToAppStorage(context, pickedUri, "song_${song.id}")?.let { savedUri ->
+                customArtUri = savedUri
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.elevatedBackground,
+        title = {
+            Text(
+                text = "Edit Track Info & Artwork",
+                fontWeight = FontWeight.Bold,
+                color = colors.primaryText
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AlbumArtImage(
+                            artworkUri = customArtUri?.let { Uri.parse(it) } ?: song.albumArtUri,
+                            audioUri = song.contentUri,
+                            modifier = Modifier.fillMaxSize(),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = { imagePicker.launch("image/*") },
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, tint = colors.accent, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Choose Artwork", color = colors.primaryText, fontSize = 12.sp)
+                        }
+                        if (customArtUri != null) {
+                            TextButton(onClick = { customArtUri = null }) {
+                                Text("Reset Artwork", color = colors.secondaryText, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Song Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = artist,
+                    onValueChange = { artist = it },
+                    label = { Text("Artist") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = album,
+                    onValueChange = { album = it },
+                    label = { Text("Album") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = yearText,
+                    onValueChange = { yearText = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("Release Year") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val parsedYear = yearText.toIntOrNull()?.takeIf { it in 1900..2100 }
+                    onSave(
+                        title.trim().takeIf { it.isNotBlank() },
+                        artist.trim().takeIf { it.isNotBlank() },
+                        album.trim().takeIf { it.isNotBlank() },
+                        parsedYear,
+                        customArtUri
+                    )
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.accent,
+                    contentColor = colors.primaryText
+                )
+            ) {
+                Text("Save")
             }
         },
         dismissButton = {

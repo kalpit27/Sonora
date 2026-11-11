@@ -48,10 +48,11 @@ class YouTubeAudioDownloader(
     private val context: Context,
     private val database: SonoraDatabase,
     private val streamResolver: YouTubeStreamResolver = YouTubeStreamResolver(),
-    private val ffmpegConverter: FFmpegAudioConverter = FFmpegAudioConverter(context)
+    val ffmpegConverter: FFmpegAudioConverter = FFmpegAudioConverter(context)
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val downloadHistoryDao = database.downloadHistoryDao()
+    private val downloadQueueDao = database.downloadQueueDao()
     private val mediaScanner = MediaScanner(context)
 
     // Single Download State
@@ -71,6 +72,46 @@ class YouTubeAudioDownloader(
     private var queueJob: Job? = null
     private var pendingMediaStoreUri: Uri? = null
     private var pendingFile: File? = null
+
+    init {
+        // Restore existing queue from database upon app launch or process restart
+        scope.launch {
+            try {
+                val savedQueue = downloadQueueDao.getQueueList()
+                if (savedQueue.isNotEmpty()) {
+                    val domainItems = savedQueue.map { it.toQueueDownloadItem() }
+                    _downloadQueue.value = domainItems
+                    val completed = domainItems.count { it.status == DownloadStatus.COMPLETED }
+                    val failed = domainItems.count { it.status == DownloadStatus.FAILED }
+                    val total = domainItems.size
+                    val pendingIndex = domainItems.indexOfFirst {
+                        it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING
+                    }
+                    val currentTitle = if (pendingIndex >= 0) domainItems[pendingIndex].title else ""
+                    val pct = if (total > 0) ((completed.toDouble() / total.toDouble()) * 100).toInt().coerceIn(0, 100) else 100
+                    val playlistName = savedQueue.firstOrNull()?.playlistTitle ?: "Imported Playlist"
+
+                    _overallProgress.value = QueueOverallProgress(
+                        totalTracks = total,
+                        completedTracks = completed,
+                        failedTracks = failed,
+                        currentTrackIndex = if (pendingIndex >= 0) pendingIndex + 1 else total,
+                        currentTrackTitle = currentTitle,
+                        overallPercentage = pct,
+                        isQueueActive = pendingIndex >= 0,
+                        targetPlaylistName = playlistName
+                    )
+
+                    // Resume downloading in background if there were pending tracks left
+                    if (pendingIndex >= 0) {
+                        startBackgroundQueueProcessing(playlistName, allowDuplicates = false)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     /**
      * Checks if a file or track with the same title already exists locally in Sonora.
@@ -102,7 +143,9 @@ class YouTubeAudioDownloader(
         onComplete: (uri: Uri) -> Unit = {},
         onError: (message: String) -> Unit = {}
     ) {
-        cancelCurrentDownload()
+        // Cancel any active previous job directly without sending stop/cancel signals to service
+        currentDownloadJob?.cancel()
+        currentDownloadJob = null
 
         val finalTitle = (customTitle?.trim()?.ifBlank { null } ?: videoInfo.title).trim()
         val finalArtist = (customArtist?.trim()?.ifBlank { null } ?: videoInfo.channelTitle).trim()
@@ -119,6 +162,9 @@ class YouTubeAudioDownloader(
                 )
                 return@launch
             }
+
+            // Elevate to Foreground Service so download continues when minimized or closed
+            SonoraDownloadService.start(context)
 
             val historyId = downloadHistoryDao.insertHistory(
                 DownloadHistoryEntity(
@@ -145,34 +191,57 @@ class YouTubeAudioDownloader(
                 quality = quality,
                 isDuplicate = false,
                 durationSeconds = videoInfo.durationSeconds,
-                stageDescription = "Downloading audio stream..."
+                stageDescription = "Downloading..."
             )
 
             try {
-                val downloadedUri = downloadAndConvertStream(
-                    audioSourceUrl = audioSourceUrl,
-                    videoId = videoInfo.videoId,
-                    title = finalTitle,
-                    artist = finalArtist,
-                    quality = quality,
-                    destinationTreeUri = destinationTreeUri,
-                    onProgressUpdate = { progress, downloaded, total, stage ->
-                        val currentStatus = if (progress >= 50 && progress < 95) DownloadStatus.CONVERTING else DownloadStatus.DOWNLOADING
-                        _activeDownload.value = _activeDownload.value.copy(
-                            status = currentStatus,
-                            progress = progress,
-                            downloadedBytes = downloaded,
-                            totalBytes = total,
-                            stageDescription = stage
+                // Network retry loop: retry up to 3 times on network interruptions
+                var downloadedUri: Uri? = null
+                var lastErr: Exception? = null
+                val maxAttempts = 3
+
+                for (attempt in 1..maxAttempts) {
+                    ensureActive()
+                    try {
+                        downloadedUri = downloadAndConvertStream(
+                            audioSourceUrl = audioSourceUrl,
+                            videoId = videoInfo.videoId,
+                            title = finalTitle,
+                            artist = finalArtist,
+                            quality = quality,
+                            destinationTreeUri = destinationTreeUri,
+                            onProgressUpdate = { progress, downloaded, total, stage ->
+                                val currentStatus = if (progress >= 50 && progress < 95) DownloadStatus.CONVERTING else DownloadStatus.DOWNLOADING
+                                val simpleStage = if (currentStatus == DownloadStatus.CONVERTING) "Converting Audio..." else "Downloading..."
+                                _activeDownload.value = _activeDownload.value.copy(
+                                    status = currentStatus,
+                                    progress = progress,
+                                    downloadedBytes = downloaded,
+                                    totalBytes = total,
+                                    stageDescription = simpleStage
+                                )
+                            }
                         )
+                        break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        lastErr = e
+                        if (attempt < maxAttempts) {
+                            delay(attempt * 2000L)
+                        }
                     }
-                )
+                }
+
+                if (downloadedUri == null) {
+                    throw lastErr ?: Exception("Download failed after retries")
+                }
 
                 _activeDownload.value = _activeDownload.value.copy(
                     status = DownloadStatus.COMPLETED,
                     progress = 100,
                     localUri = downloadedUri.toString(),
-                    stageDescription = "Saved locally as MP3"
+                    stageDescription = "Download Completed"
                 )
 
                 downloadHistoryDao.updateStatus(
@@ -184,6 +253,11 @@ class YouTubeAudioDownloader(
                     errorMessage = null
                 )
 
+                val artFile = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir, "artwork/${videoInfo.videoId}.jpg")
+                if (artFile.exists() && artFile.length() > 0) {
+                    downloadHistoryDao.updateThumbnail(historyId, Uri.fromFile(artFile).toString())
+                }
+
                 withContext(Dispatchers.Main) {
                     onComplete(downloadedUri)
                 }
@@ -192,7 +266,7 @@ class YouTubeAudioDownloader(
                 _activeDownload.value = _activeDownload.value.copy(
                     status = DownloadStatus.CANCELLED,
                     errorMessage = "Download was cancelled.",
-                    stageDescription = "Cancelled"
+                    stageDescription = "Download Cancelled"
                 )
                 downloadHistoryDao.updateStatus(
                     id = historyId,
@@ -209,7 +283,7 @@ class YouTubeAudioDownloader(
                 _activeDownload.value = _activeDownload.value.copy(
                     status = DownloadStatus.FAILED,
                     errorMessage = errorMsg,
-                    stageDescription = "Failed"
+                    stageDescription = "Download Failed"
                 )
                 downloadHistoryDao.updateStatus(
                     id = historyId,
@@ -228,8 +302,8 @@ class YouTubeAudioDownloader(
 
     /**
      * Enqueues and downloads all selected tracks from a YouTube Playlist.
-     * Converts every track to MP3, tracks overall progress, creates a dedicated
-     * Sonora playlist in Room, and indexes all tracks into the local music library.
+     * Runs in the background via SonoraDownloadService even if Sonora is minimized or closed.
+     * Persists queue items in Room database and retries on network interruptions.
      */
     fun startPlaylistDownload(
         playlistInfo: YouTubePlaylistInfo,
@@ -266,14 +340,62 @@ class YouTubeAudioDownloader(
             targetPlaylistName = playlistInfo.title
         )
 
+        // Persist queue to Room DB so state restores when app is reopened
+        scope.launch {
+            val entities = queueItems.mapIndexed { idx, itm ->
+                com.sonora.music.data.local.database.entity.DownloadQueueEntity(
+                    id = itm.id,
+                    videoId = itm.videoId,
+                    title = itm.title,
+                    artist = itm.artist,
+                    thumbnailUrl = itm.thumbnailUrl,
+                    downloadUrl = itm.downloadUrl,
+                    quality = itm.quality.label,
+                    status = itm.status.name,
+                    progress = itm.progress,
+                    downloadedBytes = itm.downloadedBytes,
+                    totalBytes = itm.totalBytes,
+                    errorMessage = itm.errorMessage,
+                    localUri = itm.localUri,
+                    isDuplicate = itm.isDuplicate,
+                    playlistTitle = playlistInfo.title,
+                    orderIndex = idx
+                )
+            }
+            downloadQueueDao.clearQueue()
+            downloadQueueDao.insertAll(entities)
+        }
+
+        startBackgroundQueueProcessing(playlistInfo.title, allowDuplicates, onPlaylistImported)
+    }
+
+    /**
+     * Executes the playlist download queue sequentially in the background.
+     * Handles network interruptions with exponential backoff retries.
+     */
+    private fun startBackgroundQueueProcessing(
+        playlistTitle: String,
+        allowDuplicates: Boolean = false,
+        onPlaylistImported: (playlistId: Long) -> Unit = {}
+    ) {
+        queueJob?.cancel()
+        SonoraDownloadService.start(context)
+
         queueJob = scope.launch {
             val downloadedTitles = mutableListOf<String>()
 
-            for (index in queueItems.indices) {
+            // Pre-seed completed titles if resuming an interrupted session
+            _downloadQueue.value.filter { it.status == DownloadStatus.COMPLETED }.forEach {
+                downloadedTitles.add(it.title)
+            }
+
+            val totalCount = _downloadQueue.value.size
+
+            for (index in _downloadQueue.value.indices) {
                 ensureActive()
 
-                val item = _downloadQueue.value[index]
-                if (item.status == DownloadStatus.CANCELLED) {
+                val item = _downloadQueue.value.getOrNull(index) ?: continue
+                if (item.status == DownloadStatus.COMPLETED || item.status == DownloadStatus.CANCELLED) {
                     continue
                 }
 
@@ -286,23 +408,26 @@ class YouTubeAudioDownloader(
                             else itm
                         }
                     }
+                    downloadQueueDao.updateStatus(item.id, DownloadStatus.COMPLETED.name, 100, null, null)
                     downloadedTitles.add(item.title)
-                    updateOverallProgress(index + 1, queueItems.size, playlistInfo.title)
+                    updateOverallProgress(index + 1, totalCount, playlistTitle)
                     continue
                 }
 
-                // Set current item downloading
+                // Mark current track as downloading
                 _downloadQueue.update { list ->
                     list.mapIndexed { idx, itm ->
                         if (idx == index) itm.copy(status = DownloadStatus.DOWNLOADING, progress = 0)
                         else itm
                     }
                 }
+                downloadQueueDao.updateProgress(item.id, DownloadStatus.DOWNLOADING.name, 0, 0, 0)
 
                 _overallProgress.update {
                     it.copy(
                         currentTrackIndex = index + 1,
-                        currentTrackTitle = item.title
+                        currentTrackTitle = item.title,
+                        isQueueActive = true
                     )
                 }
 
@@ -312,65 +437,112 @@ class YouTubeAudioDownloader(
                         title = item.title,
                         artist = item.artist,
                         thumbnailUrl = item.thumbnailUrl,
-                        quality = quality.label,
+                        quality = item.quality.label,
                         status = "DOWNLOADING",
                         downloadUrl = item.downloadUrl,
                         timestamp = System.currentTimeMillis()
                     )
                 )
 
-                try {
-                    // Resolve real audio stream URL if item.downloadUrl is a YouTube watch page
-                    val audioStreamUrl = if (!streamResolver.isDirectAudioUrl(item.downloadUrl)) {
-                        val resolveResult = streamResolver.resolveAudioStreamUrl(item.videoId)
-                        if (resolveResult.isFailure) {
-                            throw Exception("Stream resolve failed: ${resolveResult.exceptionOrNull()?.message}")
-                        }
-                        resolveResult.getOrThrow()
-                    } else {
-                        item.downloadUrl
-                    }
+                var downloadedUri: Uri? = null
+                var lastItemError: Exception? = null
+                val maxAttempts = 3
 
-                    val downloadedUri = downloadAndConvertStream(
-                        audioSourceUrl = audioStreamUrl,
-                        videoId = item.videoId,
-                        title = item.title,
-                        artist = item.artist,
-                        quality = quality,
-                        destinationTreeUri = null,
-                        onProgressUpdate = { progress, downloaded, total, _ ->
-                            _downloadQueue.update { list ->
-                                list.mapIndexed { idx, itm ->
-                                    if (idx == index) itm.copy(
-                                        progress = progress,
-                                        downloadedBytes = downloaded,
-                                        totalBytes = total
-                                    ) else itm
+                try {
+                    for (attempt in 1..maxAttempts) {
+                        ensureActive()
+                        try {
+                            val audioStreamUrl = if (!streamResolver.isDirectAudioUrl(item.downloadUrl)) {
+                                val resolveResult = streamResolver.resolveAudioStreamUrl(item.videoId)
+                                if (resolveResult.isFailure) {
+                                    throw Exception("Stream resolve failed: ${resolveResult.exceptionOrNull()?.message}")
                                 }
+                                resolveResult.getOrThrow()
+                            } else {
+                                item.downloadUrl
+                            }
+
+                            var lastProgressDbWrite = 0L
+                            downloadedUri = downloadAndConvertStream(
+                                audioSourceUrl = audioStreamUrl,
+                                videoId = item.videoId,
+                                title = item.title,
+                                artist = item.artist,
+                                quality = item.quality,
+                                destinationTreeUri = null,
+                                onProgressUpdate = { progress, downloaded, total, _ ->
+                                    _downloadQueue.update { list ->
+                                        list.mapIndexed { idx, itm ->
+                                            if (idx == index) itm.copy(
+                                                progress = progress,
+                                                downloadedBytes = downloaded,
+                                                totalBytes = total
+                                            ) else itm
+                                        }
+                                    }
+
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastProgressDbWrite > 500) {
+                                        lastProgressDbWrite = now
+                                        scope.launch {
+                                            downloadQueueDao.updateProgress(item.id, DownloadStatus.DOWNLOADING.name, progress, downloaded, total)
+                                        }
+                                    }
+                                }
+                            )
+                            lastItemError = null
+                            break
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            lastItemError = e
+                            e.printStackTrace()
+                            if (attempt < maxAttempts) {
+                                // Exponential backoff retry delay for network drops
+                                delay(attempt * 2000L)
                             }
                         }
-                    )
-
-                    _downloadQueue.update { list ->
-                        list.mapIndexed { idx, itm ->
-                            if (idx == index) itm.copy(
-                                status = DownloadStatus.COMPLETED,
-                                progress = 100,
-                                localUri = downloadedUri.toString()
-                            ) else itm
-                        }
                     }
 
-                    downloadHistoryDao.updateStatus(
-                        id = historyId,
-                        status = "COMPLETED",
-                        localPath = downloadedUri.path,
-                        mediaStoreUri = downloadedUri.toString(),
-                        fileSize = _downloadQueue.value[index].downloadedBytes,
-                        errorMessage = null
-                    )
+                    if (downloadedUri != null) {
+                        _downloadQueue.update { list ->
+                            list.mapIndexed { idx, itm ->
+                                if (idx == index) itm.copy(
+                                    status = DownloadStatus.COMPLETED,
+                                    progress = 100,
+                                    localUri = downloadedUri.toString()
+                                ) else itm
+                            }
+                        }
+                        downloadQueueDao.updateStatus(item.id, DownloadStatus.COMPLETED.name, 100, downloadedUri.toString(), null)
 
-                    downloadedTitles.add(item.title)
+                        downloadHistoryDao.updateStatus(
+                            id = historyId,
+                            status = "COMPLETED",
+                            localPath = downloadedUri.path,
+                            mediaStoreUri = downloadedUri.toString(),
+                            fileSize = _downloadQueue.value.getOrNull(index)?.downloadedBytes ?: 0L,
+                            errorMessage = null
+                        )
+
+                        val playlistArtFile = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir, "artwork/${item.videoId}.jpg")
+                        if (playlistArtFile.exists() && playlistArtFile.length() > 0) {
+                            downloadHistoryDao.updateThumbnail(historyId, Uri.fromFile(playlistArtFile).toString())
+                        }
+
+                        downloadedTitles.add(item.title)
+                    } else {
+                        cleanupPendingFiles()
+                        val errorMsg = lastItemError?.message ?: "Failed"
+                        _downloadQueue.update { list ->
+                            list.mapIndexed { idx, itm ->
+                                if (idx == index) itm.copy(status = DownloadStatus.FAILED, errorMessage = errorMsg)
+                                else itm
+                            }
+                        }
+                        downloadQueueDao.updateStatus(item.id, DownloadStatus.FAILED.name, 0, null, errorMsg)
+                        downloadHistoryDao.updateStatus(historyId, "FAILED", null, null, 0L, errorMsg)
+                    }
                 } catch (e: CancellationException) {
                     cleanupPendingFiles()
                     _downloadQueue.update { list ->
@@ -379,22 +551,24 @@ class YouTubeAudioDownloader(
                             else itm
                         }
                     }
+                    downloadQueueDao.updateStatus(item.id, DownloadStatus.CANCELLED.name, 0, null, "Cancelled by user")
                     downloadHistoryDao.updateStatus(historyId, "CANCELLED", null, null, 0L, "Cancelled by user")
                     throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
                     cleanupPendingFiles()
-                    val errorMsg = e.message ?: "Failed"
+                    val errorMsg = lastItemError?.message ?: e.message ?: "Failed"
                     _downloadQueue.update { list ->
                         list.mapIndexed { idx, itm ->
                             if (idx == index) itm.copy(status = DownloadStatus.FAILED, errorMessage = errorMsg)
                             else itm
                         }
                     }
+                    downloadQueueDao.updateStatus(item.id, DownloadStatus.FAILED.name, 0, null, errorMsg)
                     downloadHistoryDao.updateStatus(historyId, "FAILED", null, null, 0L, errorMsg)
                 }
 
-                updateOverallProgress(index + 1, queueItems.size, playlistInfo.title)
+                updateOverallProgress(index + 1, totalCount, playlistTitle)
             }
 
             // Sync with MediaStore & Room library
@@ -403,7 +577,7 @@ class YouTubeAudioDownloader(
             database.songDao().syncMediaStoreSongs(scannedSongs)
 
             // Organize imported tracks under Sonora Playlist
-            val playlistId = createSonoraPlaylistForImport(playlistInfo.title, downloadedTitles, scannedSongs)
+            val playlistId = createSonoraPlaylistForImport(playlistTitle, downloadedTitles, scannedSongs)
 
             _overallProgress.update {
                 it.copy(
@@ -471,6 +645,9 @@ class YouTubeAudioDownloader(
         queueJob?.cancel()
         queueJob = null
         cancelCurrentDownload()
+        scope.launch {
+            downloadQueueDao.clearQueue()
+        }
         _downloadQueue.update { list ->
             list.map { item ->
                 if (item.status == DownloadStatus.DOWNLOADING || item.status == DownloadStatus.PENDING) {
@@ -479,6 +656,7 @@ class YouTubeAudioDownloader(
             }
         }
         _overallProgress.update { it.copy(isQueueActive = false) }
+        SonoraDownloadService.stop(context)
     }
 
     /**
@@ -495,6 +673,9 @@ class YouTubeAudioDownloader(
                 else it
             }
         }
+        scope.launch {
+            downloadQueueDao.updateStatus(id, DownloadStatus.CANCELLED.name, 0, null, "Cancelled")
+        }
     }
 
     /**
@@ -502,47 +683,16 @@ class YouTubeAudioDownloader(
      */
     fun retryQueueItem(id: String) {
         val item = _downloadQueue.value.find { it.id == id } ?: return
-        scope.launch {
-            _downloadQueue.update { list ->
-                list.map {
-                    if (it.id == id) it.copy(status = DownloadStatus.DOWNLOADING, progress = 0, errorMessage = null)
-                    else it
-                }
-            }
-
-            try {
-                val downloadedUri = downloadAndConvertStream(
-                    audioSourceUrl = item.downloadUrl,
-                    videoId = item.videoId,
-                    title = item.title,
-                    artist = item.artist,
-                    quality = item.quality,
-                    destinationTreeUri = null,
-                    onProgressUpdate = { progress, downloaded, total, _ ->
-                        _downloadQueue.update { list ->
-                            list.map {
-                                if (it.id == id) it.copy(progress = progress, downloadedBytes = downloaded, totalBytes = total)
-                                else it
-                            }
-                        }
-                    }
-                )
-
-                _downloadQueue.update { list ->
-                    list.map {
-                        if (it.id == id) it.copy(status = DownloadStatus.COMPLETED, progress = 100, localUri = downloadedUri.toString())
-                        else it
-                    }
-                }
-            } catch (e: Exception) {
-                _downloadQueue.update { list ->
-                    list.map {
-                        if (it.id == id) it.copy(status = DownloadStatus.FAILED, errorMessage = e.message ?: "Failed")
-                        else it
-                    }
-                }
+        _downloadQueue.update { list ->
+            list.map {
+                if (it.id == id) it.copy(status = DownloadStatus.PENDING, progress = 0, errorMessage = null)
+                else it
             }
         }
+        scope.launch {
+            downloadQueueDao.updateStatus(id, DownloadStatus.PENDING.name, 0, null, null)
+        }
+        startBackgroundQueueProcessing(_overallProgress.value.targetPlaylistName ?: "Playlist", allowDuplicates = true)
     }
 
     /**
@@ -552,16 +702,28 @@ class YouTubeAudioDownloader(
         val failedItems = _downloadQueue.value.filter { it.status == DownloadStatus.FAILED || it.status == DownloadStatus.CANCELLED }
         if (failedItems.isEmpty()) return
 
-        scope.launch {
-            for (failed in failedItems) {
-                retryQueueItem(failed.id)
+        _downloadQueue.update { list ->
+            list.map {
+                if (it.status == DownloadStatus.FAILED || it.status == DownloadStatus.CANCELLED) {
+                    it.copy(status = DownloadStatus.PENDING, progress = 0, errorMessage = null)
+                } else it
             }
         }
+        scope.launch {
+            for (failed in failedItems) {
+                downloadQueueDao.updateStatus(failed.id, DownloadStatus.PENDING.name, 0, null, null)
+            }
+        }
+        startBackgroundQueueProcessing(_overallProgress.value.targetPlaylistName ?: "Playlist", allowDuplicates = true)
     }
 
     fun clearQueue() {
+        cancelQueue()
         _downloadQueue.value = emptyList()
         _overallProgress.value = QueueOverallProgress()
+        scope.launch {
+            downloadQueueDao.clearQueue()
+        }
     }
 
     fun cancelCurrentDownload() {
@@ -574,6 +736,9 @@ class YouTubeAudioDownloader(
                 errorMessage = "Download cancelled by user.",
                 stageDescription = "Cancelled"
             )
+        }
+        if (!_overallProgress.value.isQueueActive) {
+            SonoraDownloadService.stop(context)
         }
     }
 
@@ -634,7 +799,7 @@ class YouTubeAudioDownloader(
             throw IllegalStateException("Cannot download YouTube watch page directly as audio. Audio stream must be resolved first.")
         }
 
-        onProgressUpdate(5, 0L, 0L, "Connecting to audio stream...")
+        onProgressUpdate(5, 0L, 0L, "Downloading...")
 
         // Build candidate list of streams to try
         val candidatesToTry = mutableListOf<com.sonora.music.data.importer.YouTubeAudioCandidate>()
@@ -672,7 +837,7 @@ class YouTubeAudioDownloader(
         // seamlessly fall back to progressive AAC format (itag 18) which never 403s.
         for ((idx, candidate) in candidatesToTry.withIndex()) {
             try {
-                val stageMsg = if (idx == 0) "Connecting to audio stream..." else "Retrying stream (source #${idx + 1})..."
+                val stageMsg = "Downloading..."
                 onProgressUpdate(5 + (idx * 2).coerceAtMost(10), 0L, 0L, stageMsg)
 
                 val url = URL(candidate.url)
@@ -734,7 +899,7 @@ class YouTubeAudioDownloader(
                                 ((totalDownloaded.toDouble() / totalBytes.toDouble()) * 50).toInt().coerceIn(0, 50)
                             } else 25
 
-                            onProgressUpdate(downloadPct, totalDownloaded, totalBytes, "Downloading audio stream ($downloadPct%)...")
+                            onProgressUpdate(downloadPct, totalDownloaded, totalBytes, "Downloading...")
                         }
                     }
                     outStream.flush()
@@ -771,17 +936,26 @@ class YouTubeAudioDownloader(
             throw lastDownloadError ?: IllegalStateException("Failed to download audio from all available stream sources.")
         }
 
-        // Stage 2: Convert supported source audio to MP3 using FFmpeg (50% to 90% overall progress)
-        onProgressUpdate(52, tempSourceFile.length(), tempSourceFile.length(), "Converting audio to MP3 format (FFmpeg)...")
+        // Stage 2: Convert supported source audio to MP3 format (50% to 90% overall progress)
+        onProgressUpdate(52, tempSourceFile.length(), tempSourceFile.length(), "Converting Audio...")
+
+        // Download artwork locally so it is embedded into MP3 ID3 APIC tag and cached offline
+        val localArtFile = if (!videoId.isNullOrBlank()) {
+            val fallbackUrl = _activeDownload.value.thumbnailUrl?.takeIf { it.isNotBlank() } ?: ""
+            downloadArtworkLocally(videoId, fallbackUrl)
+        } else null
+        val artworkBytes = localArtFile?.takeIf { it.exists() && it.length() > 0 }?.readBytes()
+
         val convertResult = ffmpegConverter.convertToMp3(
             sourceFile = tempSourceFile,
             targetMp3File = tempMp3File,
             quality = quality,
             title = title,
             artist = artist,
-            onProgress = { convertPct, stage ->
+            artworkBytes = artworkBytes,
+            onProgress = { convertPct, _ ->
                 val overallPct = 50 + (convertPct * 0.4).toInt()
-                onProgressUpdate(overallPct, tempSourceFile.length(), tempSourceFile.length(), "Converting to MP3: $stage")
+                onProgressUpdate(overallPct, tempSourceFile.length(), tempSourceFile.length(), "Converting Audio...")
             }
         )
 
@@ -791,10 +965,13 @@ class YouTubeAudioDownloader(
             throw convertResult.exceptionOrNull() ?: Exception("Audio format conversion to MP3 failed")
         }
 
-        // Stage 3: Save converted MP3 to destination folder with meaningful filename (90% to 100%)
-        onProgressUpdate(92, tempMp3File.length(), tempMp3File.length(), "Saving MP3 to local storage...")
-        val meaningfulFilename = "${generateMeaningfulFilename(title, artist)}.mp3"
-        val (outputStream, outputUri) = createAudioOutput(meaningfulFilename, title, artist, destinationTreeUri)
+        // Stage 3: Save converted audio to destination folder with meaningful filename (90% to 100%)
+        onProgressUpdate(92, tempMp3File.length(), tempMp3File.length(), "Saving Audio...")
+        val isMp3 = ffmpegConverter.isMp3Stream(tempMp3File)
+        val ext = if (isMp3) "mp3" else "m4a"
+        val mimeType = if (isMp3) "audio/mpeg" else "audio/mp4"
+        val meaningfulFilename = "${generateMeaningfulFilename(title, artist)}.$ext"
+        val (outputStream, outputUri) = createAudioOutput(meaningfulFilename, title, artist, destinationTreeUri, mimeType)
         pendingMediaStoreUri = outputUri
 
         try {
@@ -802,7 +979,7 @@ class YouTubeAudioDownloader(
                 inStream.copyTo(outputStream)
                 outputStream.flush()
             }
-            onProgressUpdate(100, tempMp3File.length(), tempMp3File.length(), "Complete!")
+            onProgressUpdate(100, tempMp3File.length(), tempMp3File.length(), "Download Completed")
         } finally {
             try { outputStream.close() } catch (ignored: Exception) {}
             // Clean up temporary server/cache files after processing
@@ -823,33 +1000,67 @@ class YouTubeAudioDownloader(
             MediaScannerConnection.scanFile(
                 context,
                 arrayOf(physicalPath),
-                arrayOf("audio/mpeg")
+                arrayOf(mimeType)
             ) { _, _ -> }
+        }
+
+        // Immediately index the downloaded song into Sonora Room database so it is instantly available and playable
+        try {
+            val mediaStoreId = try {
+                android.content.ContentUris.parseId(outputUri)
+            } catch (e: Exception) {
+                System.currentTimeMillis()
+            }
+            val artUri = localArtFile?.takeIf { it.exists() && it.length() > 0 }?.let { Uri.fromFile(it).toString() }
+                ?: _activeDownload.value.thumbnailUrl
+
+            val songEntity = com.sonora.music.data.local.database.entity.SongEntity(
+                id = mediaStoreId,
+                title = title,
+                artist = artist,
+                album = "Sonora Imports",
+                durationMs = (_activeDownload.value.durationSeconds * 1000L).takeIf { it > 0 } ?: 0L,
+                contentUriString = outputUri.toString(),
+                albumId = 0L,
+                albumArtUriString = artUri,
+                trackNumber = 1,
+                year = 2026,
+                dateAdded = System.currentTimeMillis() / 1000,
+                folderName = "Sonora",
+                mimeType = mimeType,
+                isFavorite = false,
+                playCount = 0,
+                lastPlayedTimestamp = 0L
+            )
+            database.songDao().insertSongs(listOf(songEntity))
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
         outputUri
     }
 
     /**
-     * Creates an output stream and URI for saving the MP3 file,
+     * Creates an output stream and URI for saving the audio file,
      * supporting either user-selected SAF destination folder or default MediaStore Music/Sonora.
      */
     private fun createAudioOutput(
         fileName: String,
         title: String,
         artist: String,
-        destinationTreeUri: Uri?
+        destinationTreeUri: Uri?,
+        mimeType: String = "audio/mpeg"
     ): Pair<OutputStream, Uri> {
         if (destinationTreeUri != null) {
             val docId = DocumentsContract.getTreeDocumentId(destinationTreeUri)
             val parentUri = DocumentsContract.buildDocumentUriUsingTree(destinationTreeUri, docId)
-            val createdUri = DocumentsContract.createDocument(context.contentResolver, parentUri, "audio/mpeg", fileName)
-                ?: throw IllegalStateException("Could not create MP3 file in selected destination folder")
+            val createdUri = DocumentsContract.createDocument(context.contentResolver, parentUri, mimeType, fileName)
+                ?: throw IllegalStateException("Could not create audio file in selected destination folder")
             val stream = context.contentResolver.openOutputStream(createdUri)
                 ?: throw IllegalStateException("Could not open output stream for destination file")
             return Pair(stream, createdUri)
         } else {
-            return createMediaStoreAudioOutput(fileName, title, artist, "audio/mpeg")
+            return createMediaStoreAudioOutput(fileName, title, artist, mimeType)
         }
     }
 
@@ -944,5 +1155,48 @@ class YouTubeAudioDownloader(
 
     fun sanitizeFilename(name: String): String {
         return name.replace(Regex("""[\\/:*?"<>|]"""), "_").trim()
+    }
+
+    /**
+     * Downloads and caches artwork locally on the device so it is permanently available offline.
+     */
+    fun downloadArtworkLocally(videoId: String, thumbnailUrl: String): File? {
+        return try {
+            val artworkDir = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir, "artwork").apply { mkdirs() }
+            val cleanId = videoId.ifBlank { System.currentTimeMillis().toString() }
+            val targetFile = File(artworkDir, "$cleanId.jpg")
+            if (targetFile.exists() && targetFile.length() > 1000) {
+                return targetFile
+            }
+
+            val urlsToTry = mutableListOf<String>()
+            if (thumbnailUrl.isNotBlank()) urlsToTry.add(thumbnailUrl)
+            if (videoId.isNotBlank()) {
+                urlsToTry.add("https://i.ytimg.com/vi/$videoId/maxresdefault.jpg")
+                urlsToTry.add("https://i.ytimg.com/vi/$videoId/hqdefault.jpg")
+                urlsToTry.add("https://i.ytimg.com/vi/$videoId/mqdefault.jpg")
+            }
+
+            for (u in urlsToTry.distinct()) {
+                try {
+                    val conn = (URL(u).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 3500
+                        readTimeout = 3500
+                    }
+                    if (conn.responseCode in 200..299) {
+                        val bytes = conn.inputStream.use { it.readBytes() }
+                        if (bytes.isNotEmpty() && !String(bytes.take(20).toByteArray()).contains("html", ignoreCase = true)) {
+                            targetFile.writeBytes(bytes)
+                            conn.disconnect()
+                            return targetFile
+                        }
+                    }
+                    conn.disconnect()
+                } catch (ignored: Exception) {}
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
     }
 }

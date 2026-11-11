@@ -2,6 +2,7 @@ package com.sonora.music.audio
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.SystemClock
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -24,10 +25,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+interface PlaybackTrackingCallbacks {
+    fun onTrackStarted(song: Song)
+    fun onListeningDelta(song: Song, deltaMs: Long, completed: Boolean, skipped: Boolean)
+}
+
 @UnstableApi
 class SonoraAudioController(
     private val context: Context,
-    private val onSongPlayed: (Long) -> Unit
+    private val trackingCallbacks: PlaybackTrackingCallbacks
 ) {
     private val scope = CoroutineScope(Dispatchers.Main)
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -38,6 +44,15 @@ class SonoraAudioController(
     val uiState: StateFlow<PlaybackUiState> = _uiState.asStateFlow()
 
     private var originalQueue: List<Song> = emptyList()
+    private var pendingPlayRequest: Pair<Song, List<Song>>? = null
+
+    // Accurate session listening tracker
+    private var activeTrackedSong: Song? = null
+    private var lastStartedSongId: Long? = null
+    private var unFlushedListeningMs: Long = 0L
+    private var lastTickRealtimeMs: Long = 0L
+    private var currentSessionCompleted: Boolean = false
+    private var skipAlreadyRecordedForSongId: Long? = null
 
     init {
         initController()
@@ -51,22 +66,69 @@ class SonoraAudioController(
         controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
         controllerFuture?.addListener(
             {
-                mediaController = controllerFuture?.get()?.apply {
-                    addListener(playerListener)
-                    syncPlayerState()
+                try {
+                    mediaController = controllerFuture?.get()?.apply {
+                        addListener(playerListener)
+                        syncPlayerState()
+                    }
+                    _uiState.update { it.copy(isConnected = true) }
+
+                    // Execute any pending play request queued before connection completed
+                    pendingPlayRequest?.let { (song, queue) ->
+                        pendingPlayRequest = null
+                        playSong(song, queue)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("SonoraAudioController", "Failed to connect to MediaSessionService", e)
                 }
-                _uiState.update { it.copy(isConnected = true) }
             },
             MoreExecutors.directExecutor()
         )
+    }
+
+    private fun captureElapsedTime() {
+        val now = SystemClock.elapsedRealtime()
+        if (lastTickRealtimeMs > 0L) {
+            val delta = (now - lastTickRealtimeMs).coerceIn(0L, 1500L)
+            unFlushedListeningMs += delta
+        }
+        lastTickRealtimeMs = if (mediaController?.isPlaying == true) now else 0L
+    }
+
+    private fun flushTrackingDelta(completed: Boolean = false, skipped: Boolean = false) {
+        val song = activeTrackedSong ?: return
+        val delta = unFlushedListeningMs
+        unFlushedListeningMs = 0L
+        if (delta > 0L || completed || skipped) {
+            trackingCallbacks.onListeningDelta(
+                song = song,
+                deltaMs = delta,
+                completed = completed,
+                skipped = skipped
+            )
+        }
+    }
+
+    private fun beginTrackingSong(song: Song) {
+        activeTrackedSong = song
+        lastStartedSongId = song.id
+        unFlushedListeningMs = 0L
+        currentSessionCompleted = false
+        skipAlreadyRecordedForSongId = null
+        lastTickRealtimeMs = if (mediaController?.isPlaying == true) SystemClock.elapsedRealtime() else 0L
+        trackingCallbacks.onTrackStarted(song)
     }
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _uiState.update { it.copy(isPlaying = isPlaying) }
             if (isPlaying) {
+                lastTickRealtimeMs = SystemClock.elapsedRealtime()
                 startProgressTracker()
             } else {
+                captureElapsedTime()
+                lastTickRealtimeMs = 0L
+                flushTrackingDelta()
                 stopProgressTracker()
             }
         }
@@ -76,13 +138,44 @@ class SonoraAudioController(
             _uiState.update { it.copy(isBuffering = isBuffering) }
 
             if (playbackState == Player.STATE_ENDED) {
+                captureElapsedTime()
+                if (!currentSessionCompleted) {
+                    currentSessionCompleted = true
+                    flushTrackingDelta(completed = true)
+                }
                 handlePlaybackEnded()
             }
             syncPlayerState()
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val controller = mediaController ?: return
+            val newIdx = controller.currentMediaItemIndex
+            val newSong = _uiState.value.queue.getOrNull(newIdx)
+            val prevSong = activeTrackedSong
+
+            captureElapsedTime()
+            if (prevSong != null && (prevSong.id != newSong?.id || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) {
+                val autoCompleted = (
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                        reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+                    ) && !currentSessionCompleted
+                val seekSkipped = reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK &&
+                    skipAlreadyRecordedForSongId != prevSong.id &&
+                    !currentSessionCompleted &&
+                    _uiState.value.durationMs > 0L &&
+                    _uiState.value.positionMs < (_uiState.value.durationMs * 0.75).toLong()
+                if (autoCompleted) {
+                    currentSessionCompleted = true
+                }
+                flushTrackingDelta(completed = autoCompleted, skipped = seekSkipped)
+            }
+
             syncPlayerState()
+
+            if (newSong != null && (newSong.id != lastStartedSongId || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) {
+                beginTrackingSong(newSong)
+            }
         }
 
         override fun onPositionDiscontinuity(
@@ -95,6 +188,8 @@ class SonoraAudioController(
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             android.util.Log.e("SonoraAudioController", "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+            captureElapsedTime()
+            flushTrackingDelta()
             _uiState.update { it.copy(isPlaying = false, isBuffering = false) }
         }
     }
@@ -117,10 +212,6 @@ class SonoraAudioController(
                 currentQueueIndex = currentIdx
             )
         }
-
-        currentSong?.let { song ->
-            onSongPlayed(song.id)
-        }
     }
 
     private fun startProgressTracker() {
@@ -129,6 +220,15 @@ class SonoraAudioController(
             while (isActive) {
                 val controller = mediaController
                 if (controller != null && controller.isPlaying) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (lastTickRealtimeMs > 0L) {
+                        val delta = (now - lastTickRealtimeMs).coerceIn(0L, 1500L)
+                        unFlushedListeningMs += delta
+                        if (unFlushedListeningMs >= 5_000L) {
+                            flushTrackingDelta()
+                        }
+                    }
+                    lastTickRealtimeMs = now
                     val pos = controller.currentPosition.coerceAtLeast(0L)
                     val dur = controller.duration.coerceAtLeast(0L)
                     _uiState.update { it.copy(positionMs = pos, durationMs = dur) }
@@ -144,7 +244,12 @@ class SonoraAudioController(
     }
 
     fun playSong(song: Song, newQueue: List<Song> = listOf(song)) {
-        val controller = mediaController ?: return
+        val controller = mediaController
+        if (controller == null) {
+            pendingPlayRequest = Pair(song, newQueue)
+            _uiState.update { it.copy(currentSong = song, isBuffering = true) }
+            return
+        }
         originalQueue = newQueue
 
         val playQueue = if (_uiState.value.isShuffle) {
@@ -181,11 +286,13 @@ class SonoraAudioController(
             )
         }
 
+        captureElapsedTime()
+        flushTrackingDelta()
+        beginTrackingSong(song)
+
         controller.setMediaItems(mediaItems, targetIndex, 0L)
         controller.prepare()
         controller.play()
-
-        onSongPlayed(song.id)
     }
 
     fun playQueueIndex(index: Int) {
@@ -193,8 +300,8 @@ class SonoraAudioController(
         val queue = _uiState.value.queue
         if (index in queue.indices) {
             val song = queue[index]
-            controller.seekTo(index, 0L)
-            controller.play()
+            captureElapsedTime()
+            flushTrackingDelta()
             _uiState.update {
                 it.copy(
                     currentSong = song,
@@ -203,7 +310,9 @@ class SonoraAudioController(
                     durationMs = song.durationMs
                 )
             }
-            onSongPlayed(song.id)
+            beginTrackingSong(song)
+            controller.seekTo(index, 0L)
+            controller.play()
         }
     }
 
@@ -227,6 +336,16 @@ class SonoraAudioController(
 
     fun skipNext() {
         val controller = mediaController ?: return
+        val prev = activeTrackedSong
+        val curPos = controller.currentPosition.coerceAtLeast(0L)
+        val dur = controller.duration.coerceAtLeast(0L)
+        val isEarlySkip = prev != null && !currentSessionCompleted &&
+            (dur <= 0L || curPos < (dur * 0.75).toLong())
+        if (isEarlySkip) {
+            skipAlreadyRecordedForSongId = prev?.id
+            captureElapsedTime()
+            flushTrackingDelta(skipped = true)
+        }
         if (controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
             controller.play()
@@ -386,6 +505,10 @@ class SonoraAudioController(
 
     fun clearQueue() {
         val controller = mediaController ?: return
+        captureElapsedTime()
+        flushTrackingDelta()
+        activeTrackedSong = null
+        lastStartedSongId = null
         controller.stop()
         controller.clearMediaItems()
         _uiState.update {
@@ -403,12 +526,15 @@ class SonoraAudioController(
     private fun handlePlaybackEnded() {
         if (_uiState.value.repeatMode == SonoraRepeatMode.ALL) {
             val controller = mediaController ?: return
+            lastStartedSongId = null
             controller.seekTo(0, 0L)
             controller.play()
         }
     }
 
     fun release() {
+        captureElapsedTime()
+        flushTrackingDelta()
         stopProgressTracker()
         mediaController?.removeListener(playerListener)
         mediaController?.release()

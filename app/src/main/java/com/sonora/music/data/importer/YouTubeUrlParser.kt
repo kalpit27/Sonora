@@ -63,14 +63,24 @@ class YouTubeUrlParser {
     fun isPlaylistUrl(input: String): Boolean {
         val trimmed = input.trim()
         if (trimmed.isBlank()) return false
+
+        // If it's a specific song watch URL that has an auto-generated YouTube Music radio mix (RD...),
+        // treat it as the single song being watched rather than a static playlist.
+        if (trimmed.contains("/watch?") && extractVideoId(trimmed) != null) {
+            val listId = extractPlaylistId(trimmed)
+            if (listId == null || listId.startsWith("RD", ignoreCase = true)) {
+                return false
+            }
+        }
+
         val matcher = YOUTUBE_PLAYLIST_ID_PATTERN.matcher(trimmed)
         if (matcher.find()) {
             val listId = matcher.group(1)
-            // Valid playlist IDs are typically at least 12 characters or standard prefixes like PL, UU, LL, RD, OLAK
-            return listId != null && listId.length >= 8
+            // Valid playlist IDs are typically at least 8 characters and not dynamic radio queues
+            return listId != null && listId.length >= 8 && !listId.startsWith("RD", ignoreCase = true)
         }
         // Direct playlist ID check
-        return (trimmed.startsWith("PL") || trimmed.startsWith("UU") || trimmed.startsWith("RD") || trimmed.startsWith("OLAK5uy_")) && trimmed.length >= 12
+        return (trimmed.startsWith("PL") || trimmed.startsWith("UU") || trimmed.startsWith("OLAK5uy_")) && trimmed.length >= 12
     }
 
     /**
@@ -183,8 +193,7 @@ class YouTubeUrlParser {
             val author = json.optString("author_name", "YouTube Creator").trim()
             val authorUrl = json.optString("author_url", "")
             val oEmbedThumbnail = json.optString("thumbnail_url", "")
-            val fallbackThumbnail = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
-            val chosenThumbnail = if (oEmbedThumbnail.isNotBlank()) oEmbedThumbnail else fallbackThumbnail
+            val chosenThumbnail = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
 
             val videoInfo = YouTubeVideoInfo(
                 videoId = videoId,
@@ -297,9 +306,7 @@ class YouTubeUrlParser {
             val trackAuthor = trackAuthorMatch?.groupValues?.get(1)?.let { cleanXmlText(it) } ?: authorName
 
             // Thumbnail
-            val thumbRegex = Regex("""<media:thumbnail\s+url="([^"]+)"""")
-            val thumbMatch = thumbRegex.find(content)
-            val thumbUrl = thumbMatch?.groupValues?.get(1) ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+            val thumbUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
 
             val (artist, cleanTitle) = parseArtistAndTitle(rawTitle, trackAuthor)
 
@@ -364,7 +371,7 @@ class YouTubeUrlParser {
                             videoId = vid,
                             title = cleanTitle,
                             channelTitle = artist,
-                            thumbnailUrl = "https://i.ytimg.com/vi/$vid/hqdefault.jpg",
+                            thumbnailUrl = "https://i.ytimg.com/vi/$vid/maxresdefault.jpg",
                             originalUrl = "https://www.youtube.com/watch?v=$vid",
                             isSelected = true,
                             durationSeconds = 210L

@@ -54,6 +54,38 @@ class SonoraPlaybackService : MediaSessionService() {
 
         player = exoPlayer
 
+        // Listen for audio session id changes safely when playback initializes
+        exoPlayer.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId > 0) {
+                    try {
+                        SonoraEqualizerManager.getInstance(applicationContext).attachAudioSession(audioSessionId)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val sessionId = exoPlayer.audioSessionId
+                if (sessionId > 0) {
+                    try {
+                        SonoraEqualizerManager.getInstance(applicationContext).attachAudioSession(sessionId)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        })
+
+        if (exoPlayer.audioSessionId > 0) {
+            try {
+                SonoraEqualizerManager.getInstance(applicationContext).attachAudioSession(exoPlayer.audioSessionId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
         val sessionActivityIntent = PendingIntent.getActivity(
             this,
             0,
@@ -65,8 +97,16 @@ class SonoraPlaybackService : MediaSessionService() {
             .setSessionActivity(sessionActivityIntent)
             .build()
 
-        val filter = IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-        registerReceiver(noisyAudioReceiver, filter)
+        try {
+            val filter = IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(noisyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(noisyAudioReceiver, filter)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -93,6 +133,11 @@ class SonoraPlaybackService : MediaSessionService() {
             unregisterReceiver(noisyAudioReceiver)
         } catch (e: Exception) {
             // Receiver wasn't registered or already unregistered
+        }
+        try {
+            SonoraEqualizerManager.getInstance(applicationContext).detachAudioSession()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         mediaSession?.run {
             player.release()

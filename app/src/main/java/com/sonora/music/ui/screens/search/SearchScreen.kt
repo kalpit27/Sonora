@@ -1,16 +1,13 @@
 package com.sonora.music.ui.screens.search
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +36,7 @@ import com.sonora.music.data.model.Playlist
 import com.sonora.music.data.model.Song
 import com.sonora.music.ui.components.AddToPlaylistDialog
 import com.sonora.music.ui.components.CreatePlaylistDialog
+import com.sonora.music.ui.components.EditSongMetadataDialog
 import com.sonora.music.ui.components.EmptyStateView
 import com.sonora.music.ui.components.SongInfoDialog
 import com.sonora.music.ui.components.SongItemRow
@@ -58,12 +56,24 @@ fun SearchScreen(
     onToggleFavorite: (Song) -> Unit,
     onAddSongToPlaylist: (playlistId: Long, songId: Long) -> Unit,
     onCreatePlaylist: (name: String, description: String) -> Unit,
+    onEditSongMetadata: (songId: Long, title: String?, artist: String?, album: String?, year: Int?, artworkUri: String?) -> Unit = { _, _, _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val colors = LocalSonoraColors.current
     var songForPlaylist by remember { mutableStateOf<Song?>(null) }
     var songForInfo by remember { mutableStateOf<Song?>(null) }
+    var songForEdit by remember { mutableStateOf<Song?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+
+    songForEdit?.let { targetSong ->
+        EditSongMetadataDialog(
+            song = targetSong,
+            onDismiss = { songForEdit = null },
+            onSave = { title, artistStr, albumName, year, artworkUri ->
+                onEditSongMetadata(targetSong.id, title, artistStr, albumName, year, artworkUri)
+            }
+        )
+    }
 
     songForPlaylist?.let { targetSong ->
         AddToPlaylistDialog(
@@ -103,7 +113,7 @@ fun SearchScreen(
             .background(colors.background)
             .statusBarsPadding()
     ) {
-        // Search Header Row
+        // Top Search Bar (Spotify Style)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -121,12 +131,20 @@ fun SearchScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = onQueryChange,
-                placeholder = { Text("Search songs, artists, albums...", color = colors.secondaryText) },
+                placeholder = {
+                    Text(
+                        "What do you want to listen to?",
+                        color = Color.Black.copy(alpha = 0.6f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = null,
-                        tint = colors.accent
+                        tint = Color.Black.copy(alpha = 0.7f),
+                        modifier = Modifier.size(22.dp)
                     )
                 },
                 trailingIcon = {
@@ -135,53 +153,53 @@ fun SearchScreen(
                             Icon(
                                 imageVector = Icons.Default.Clear,
                                 contentDescription = "Clear",
-                                tint = colors.secondaryText
+                                tint = Color.Black.copy(alpha = 0.7f)
                             )
                         }
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(8.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = colors.accent,
-                    unfocusedBorderColor = colors.border,
-                    focusedContainerColor = colors.elevatedBackground,
-                    unfocusedContainerColor = colors.elevatedBackground,
-                    focusedTextColor = colors.primaryText,
-                    unfocusedTextColor = colors.primaryText
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black
                 ),
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 4.dp)
+                    .padding(end = 6.dp)
             )
         }
 
         // Body Content
         if (searchQuery.isBlank()) {
             EmptyStateView(
-                title = "Local Music Search",
-                message = "Search across your device's audio files by title, artist, or album without internet.",
+                title = "Search Your Library",
+                message = "Search by song title, artist, or album from your local library.",
                 icon = Icons.Default.Search
             )
         } else if (searchResults.isEmpty()) {
             EmptyStateView(
                 title = "No Matches Found",
-                message = "No songs matching \"$searchQuery\" were found in your local Sonora library.",
+                message = "Couldn't find any songs matching \"$searchQuery\" in your local library.",
                 icon = Icons.Default.SearchOff
             )
         } else {
             Text(
-                text = "${searchResults.size} songs found",
+                text = "${searchResults.size} tracks found",
                 color = colors.secondaryText,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )
 
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 8.dp)
+                    .padding(bottom = 90.dp)
             ) {
                 items(searchResults, key = { it.id }) { song ->
                     SongItemRow(
@@ -192,7 +210,8 @@ fun SearchScreen(
                         onPlayNext = { onPlayNext(song) },
                         onAddToQueue = { onAddToQueue(song) },
                         onAddToPlaylist = { songForPlaylist = song },
-                        onShowInfo = { songForInfo = song }
+                        onShowInfo = { songForInfo = song },
+                        onEditMetadata = { songForEdit = song }
                     )
                 }
             }

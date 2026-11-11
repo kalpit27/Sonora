@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavHostController
@@ -14,6 +15,11 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.sonora.music.data.model.SmartAlbumType
+import com.sonora.music.data.model.Song
+import com.sonora.music.data.repository.LibraryAnalyticsEngine
+import com.sonora.music.ui.screens.analytics.AnalyticsScreen
+import com.sonora.music.ui.screens.analytics.ListeningDnaScreen
 import com.sonora.music.ui.screens.details.AlbumDetailScreen
 import com.sonora.music.ui.screens.details.ArtistDetailScreen
 import com.sonora.music.ui.screens.details.FolderDetailScreen
@@ -24,6 +30,8 @@ import com.sonora.music.ui.screens.player.NowPlayingScreen
 import com.sonora.music.ui.screens.queue.QueueScreen
 import com.sonora.music.ui.screens.search.SearchScreen
 import com.sonora.music.ui.screens.settings.SettingsScreen
+import com.sonora.music.ui.screens.smart.DuplicatesScreen
+import com.sonora.music.ui.screens.smart.SmartAlbumDetailScreen
 import com.sonora.music.viewmodel.MainViewModel
 
 @UnstableApi
@@ -59,6 +67,23 @@ fun SonoraNavHost(
     val queueOverallProgress by viewModel.queueOverallProgress.collectAsState()
     val downloadHistory by viewModel.downloadHistory.collectAsState()
     val isResolvingStream by viewModel.isResolvingStream.collectAsState()
+    val defaultDownloadQuality by viewModel.defaultDownloadQuality.collectAsState()
+    val driveImportState by viewModel.driveImportState.collectAsState()
+    val driveScanState by viewModel.driveScanState.collectAsState()
+    val drivePreviewUri by viewModel.drivePreviewUri.collectAsState()
+    val isDrivePreviewPlaying by viewModel.isDrivePreviewPlaying.collectAsState()
+    val drivePreviewError by viewModel.drivePreviewError.collectAsState()
+    val lyricsState by viewModel.lyricsState.collectAsState()
+    val lyricSearchResults by viewModel.lyricSearchResults.collectAsState()
+    val isSearchingLyrics by viewModel.isSearchingLyrics.collectAsState()
+    val smartAlbumSummaries by viewModel.smartAlbumSummaries.collectAsState()
+    val artistSortOption by viewModel.artistSortOption.collectAsState()
+    val timeCapsuleGroups by viewModel.timeCapsuleGroups.collectAsState()
+    val byYearGroups by viewModel.byYearGroups.collectAsState()
+    val duplicateGroups by viewModel.duplicateGroups.collectAsState()
+    val listeningDna by viewModel.listeningDna.collectAsState()
+    val analyticsDashboard by viewModel.analyticsDashboard.collectAsState()
+    val shortTrackMaxDurationMs by viewModel.shortTrackMaxDurationMs.collectAsState()
 
     val startDestination = if (hasStoragePermission) {
         SonoraDestination.Main.route
@@ -128,7 +153,14 @@ fun SonoraNavHost(
                 onOpenWebSearch = viewModel::openWebMusicSearch,
                 onOpenYouTubeMusic = viewModel::openYouTubeMusicSearch,
                 onOpenExternalDownloader = viewModel::openExternalDownloader,
-                onNavigateYouTubeImport = { navController.navigate(SonoraDestination.YouTubeImport.route) }
+                onNavigateYouTubeImport = { navController.navigate(SonoraDestination.YouTubeImport.route) },
+                smartAlbumSummaries = smartAlbumSummaries,
+                artistSortOption = artistSortOption,
+                onArtistSortChange = viewModel::setArtistSortOption,
+                onSelectSmartAlbum = { type -> navController.navigate(SonoraDestination.SmartAlbumDetail.createRoute(type)) },
+                onOpenListeningDna = { navController.navigate(SonoraDestination.ListeningDna.route) },
+                onOpenDuplicates = { navController.navigate(SonoraDestination.Duplicates.route) },
+                onEditSongMetadata = viewModel::updateSongMetadata
             )
         }
 
@@ -149,7 +181,8 @@ fun SonoraNavHost(
                 onAddToQueue = viewModel::addToQueue,
                 onToggleFavorite = viewModel::toggleFavorite,
                 onAddSongToPlaylist = viewModel::addSongToPlaylist,
-                onCreatePlaylist = viewModel::createPlaylist
+                onCreatePlaylist = viewModel::createPlaylist,
+                onEditSongMetadata = viewModel::updateSongMetadata
             )
         }
 
@@ -160,6 +193,10 @@ fun SonoraNavHost(
         ) {
             NowPlayingScreen(
                 playbackState = playbackState,
+                equalizerManager = viewModel.equalizerManager,
+                lyricsState = lyricsState,
+                searchResults = lyricSearchResults,
+                isSearchingLyrics = isSearchingLyrics,
                 onBack = { navController.popBackStack() },
                 onOpenQueue = { navController.navigate(SonoraDestination.Queue.route) },
                 onTogglePlayPause = viewModel::togglePlayPause,
@@ -168,7 +205,11 @@ fun SonoraNavHost(
                 onSkipPrevious = viewModel::skipPrevious,
                 onToggleShuffle = viewModel::toggleShuffle,
                 onCycleRepeatMode = viewModel::cycleRepeatMode,
-                onToggleFavorite = viewModel::toggleFavorite
+                onToggleFavorite = viewModel::toggleFavorite,
+                onRetryLyrics = viewModel::retryLoadLyrics,
+                onSearchLyrics = viewModel::searchLyrics,
+                onSelectLyricResult = viewModel::applySelectedLyrics,
+                onSaveCustomLyrics = viewModel::saveCustomLyrics
             )
         }
 
@@ -198,6 +239,8 @@ fun SonoraNavHost(
                 currentSortOrder = sortOrder,
                 isHistoryEnabled = isHistoryEnabled,
                 isScanning = isScanning,
+                currentDownloadQuality = defaultDownloadQuality,
+                shortTrackMaxDurationMs = shortTrackMaxDurationMs,
                 onBack = { navController.popBackStack() },
                 onSetThemeMode = viewModel::setThemeMode,
                 onSetSorting = { opt, ord ->
@@ -205,6 +248,11 @@ fun SonoraNavHost(
                     viewModel.setSortOrder(ord)
                 },
                 onSetHistoryEnabled = viewModel::setHistoryEnabled,
+                onSetDownloadQuality = viewModel::setDownloadQuality,
+                onSetShortTrackMaxDurationMs = viewModel::setShortTrackMaxDurationMs,
+                onOpenMyAnalytics = { navController.navigate(SonoraDestination.MyAnalytics.route) },
+                onOpenListeningDna = { navController.navigate(SonoraDestination.ListeningDna.route) },
+                onOpenDuplicates = { navController.navigate(SonoraDestination.Duplicates.route) },
                 onClearHistory = viewModel::clearHistory,
                 onRescanLibrary = viewModel::rescanLibrary
             )
@@ -216,7 +264,17 @@ fun SonoraNavHost(
         ) { backStackEntry ->
             val albumId = backStackEntry.arguments?.getLong("albumId") ?: return@composable
             val album = albums.find { it.id == albumId }
-            val albumSongs = songs.filter { it.albumId == albumId }
+            val albumSongs = if (album != null) {
+                songs.filter {
+                    LibraryAnalyticsEngine.normalizeKey(LibraryAnalyticsEngine.normalizeAlbumTitle(it.album)) ==
+                        LibraryAnalyticsEngine.normalizeKey(album.title)
+                }
+            } else {
+                emptyList()
+            }.sortedWith(
+                compareBy<Song> { if (it.trackNumber > 0) it.trackNumber else Int.MAX_VALUE }
+                    .thenBy { LibraryAnalyticsEngine.normalizeKey(it.title) }
+            )
 
             AlbumDetailScreen(
                 album = album,
@@ -230,7 +288,9 @@ fun SonoraNavHost(
                 onAddToQueue = viewModel::addToQueue,
                 onToggleFavorite = viewModel::toggleFavorite,
                 onAddSongToPlaylist = viewModel::addSongToPlaylist,
-                onCreatePlaylist = viewModel::createPlaylist
+                onCreatePlaylist = viewModel::createPlaylist,
+                onUpdateAlbumArtwork = viewModel::updateAlbumArtwork,
+                onEditSongMetadata = viewModel::updateSongMetadata
             )
         }
 
@@ -240,10 +300,18 @@ fun SonoraNavHost(
         ) { backStackEntry ->
             val encodedArtist = backStackEntry.arguments?.getString("artistName") ?: return@composable
             val artistName = java.net.URLDecoder.decode(encodedArtist, "UTF-8")
-            val artistSongs = songs.filter { it.artist.equals(artistName, ignoreCase = true) }
+            val artistObj = artists.find {
+                LibraryAnalyticsEngine.normalizeKey(it.name) == LibraryAnalyticsEngine.normalizeKey(artistName)
+            }
+            val artistSongs = artistObj?.songs ?: songs.filter { song ->
+                LibraryAnalyticsEngine.parseArtists(song.artist).any { part ->
+                    LibraryAnalyticsEngine.normalizeKey(part) == LibraryAnalyticsEngine.normalizeKey(artistName)
+                }
+            }
 
             ArtistDetailScreen(
-                artistName = artistName,
+                artistName = artistObj?.name ?: artistName,
+                artist = artistObj,
                 songs = artistSongs,
                 currentSongId = playbackState.currentSong?.id,
                 playlists = playlists,
@@ -254,7 +322,8 @@ fun SonoraNavHost(
                 onAddToQueue = viewModel::addToQueue,
                 onToggleFavorite = viewModel::toggleFavorite,
                 onAddSongToPlaylist = viewModel::addSongToPlaylist,
-                onCreatePlaylist = viewModel::createPlaylist
+                onCreatePlaylist = viewModel::createPlaylist,
+                onEditSongMetadata = viewModel::updateSongMetadata
             )
         }
 
@@ -264,7 +333,8 @@ fun SonoraNavHost(
         ) { backStackEntry ->
             val playlistId = backStackEntry.arguments?.getLong("playlistId") ?: return@composable
             val playlist = playlists.find { it.id == playlistId }
-            val playlistSongs by viewModel.getPlaylistSongs(playlistId).collectAsState(initial = emptyList())
+            val playlistSongsFlow = remember(playlistId) { viewModel.getPlaylistSongs(playlistId) }
+            val playlistSongs by playlistSongsFlow.collectAsState(initial = emptyList())
 
             PlaylistDetailScreen(
                 playlist = playlist,
@@ -317,9 +387,30 @@ fun SonoraNavHost(
                 queueOverallProgress = queueOverallProgress,
                 downloadHistory = downloadHistory,
                 isResolvingStream = isResolvingStream,
+                defaultDownloadQuality = defaultDownloadQuality,
+                driveImportState = driveImportState,
+                driveScanState = driveScanState,
+                drivePreviewUri = drivePreviewUri,
+                isDrivePreviewPlaying = isDrivePreviewPlaying,
+                drivePreviewError = drivePreviewError,
                 isExternalDownloaderAvailable = viewModel.isExternalDownloaderAvailable,
-                onBack = { navController.popBackStack() },
+                onBack = {
+                    viewModel.stopDrivePreview()
+                    navController.popBackStack()
+                },
                 onFetchYouTubeUrl = viewModel::fetchYouTubeUrl,
+                onImportGoogleDriveUrl = viewModel::importGoogleDriveUrl,
+                onImportDriveFiles = viewModel::inspectPickedDriveFiles,
+                onScanDriveFolder = viewModel::scanDriveFolderTree,
+                onToggleDriveItemSelection = viewModel::toggleDriveItemSelection,
+                onToggleSelectAllDriveItems = viewModel::toggleSelectAllDriveItems,
+                onToggleDrivePreview = viewModel::toggleDrivePreview,
+                onStartStagedDriveImport = viewModel::importSelectedDriveItems,
+                onDismissDriveSelection = viewModel::dismissDriveSelectionModal,
+                onCancelDriveScan = viewModel::cancelDriveScan,
+                onClearDriveEmptyMessage = viewModel::clearDriveEmptyMessage,
+                onCancelDriveImport = viewModel::cancelDriveImport,
+                onResetDriveImport = viewModel::resetDriveImportState,
                 onClearPreview = viewModel::clearYouTubePreview,
                 onTogglePlaylistItemSelection = viewModel::togglePlaylistItemSelection,
                 onSelectAllPlaylistItems = viewModel::selectAllPlaylistItems,
@@ -340,7 +431,11 @@ fun SonoraNavHost(
                 onPlaySong = { title, uriStr ->
                     // If we have a local URI (freshly downloaded), play directly without
                     // needing the track to be in the library index yet.
-                    val artist = viewModel.activeDownloadState.value.artist
+                    val artist = if (uriStr != null && uriStr == driveImportState.lastImportedUri) {
+                        driveImportState.lastImportedArtist ?: "Unknown Artist"
+                    } else {
+                        viewModel.activeDownloadState.value.artist
+                    }
                     val started = if (!uriStr.isNullOrBlank()) {
                         viewModel.playDownloadedSongByUri(title, artist, uriStr)
                     } else {
@@ -375,6 +470,73 @@ fun SonoraNavHost(
             exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
         ) {
             renderImportAudio()
+        }
+
+        composable(
+            route = SonoraDestination.SmartAlbumDetail.route,
+            arguments = listOf(navArgument("type") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val typeName = backStackEntry.arguments?.getString("type") ?: return@composable
+            val type = runCatching { SmartAlbumType.valueOf(typeName) }.getOrNull() ?: return@composable
+            val smartSongsFlow = remember(type) { viewModel.getSmartAlbumSongs(type) }
+            val smartSongs by smartSongsFlow.collectAsState(initial = emptyList())
+
+            SmartAlbumDetailScreen(
+                type = type,
+                songs = smartSongs,
+                timeCapsuleGroups = timeCapsuleGroups,
+                byYearGroups = byYearGroups,
+                shortTrackMaxDurationMs = shortTrackMaxDurationMs,
+                currentSongId = playbackState.currentSong?.id,
+                playlists = playlists,
+                onBack = { navController.popBackStack() },
+                onPlayAll = viewModel::playAll,
+                onPlaySong = viewModel::playSong,
+                onPlayNext = viewModel::playNext,
+                onAddToQueue = viewModel::addToQueue,
+                onToggleFavorite = viewModel::toggleFavorite,
+                onAddSongToPlaylist = viewModel::addSongToPlaylist,
+                onCreatePlaylist = viewModel::createPlaylist,
+                onSetShortTrackMaxMs = viewModel::setShortTrackMaxDurationMs,
+                onEditSongMetadata = viewModel::updateSongMetadata
+            )
+        }
+
+        composable(
+            route = SonoraDestination.ListeningDna.route,
+            enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300)) },
+            exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
+        ) {
+            ListeningDnaScreen(
+                dna = listeningDna,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = SonoraDestination.MyAnalytics.route,
+            enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300)) },
+            exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
+        ) {
+            AnalyticsScreen(
+                data = analyticsDashboard,
+                onBack = { navController.popBackStack() },
+                onSelectFilter = viewModel::setAnalyticsFilter,
+                onStepRange = viewModel::stepAnalyticsRange
+            )
+        }
+
+        composable(
+            route = SonoraDestination.Duplicates.route,
+            enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300)) },
+            exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(250)) }
+        ) {
+            DuplicatesScreen(
+                duplicateGroups = duplicateGroups,
+                onBack = { navController.popBackStack() },
+                onPlaySong = viewModel::playSong,
+                onDeleteSong = viewModel::deleteSong
+            )
         }
     }
 }
